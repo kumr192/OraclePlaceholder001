@@ -1,0 +1,32 @@
+{
+  "watch": "Oracle fusioncoe AI Agent Studio + Agentic Apps learning paths",
+  "targets": [
+    "https://blogs.oracle.com/fusioncoe/fusion-ai-agent-studio-learning-path",
+    "https://blogs.oracle.com/fusioncoe/fusion-ai-agentic-apps-learning-path"
+  ],
+  "method": "web-search index over blogs.oracle.com/fusioncoe (direct page fetch is 403-blocked)",
+  "first_captured": "2026-07-05",
+  "last_checked": "2026-07-05",
+  "known_post_urls": [
+    "https://blogs.oracle.com/fusioncoe/fusion-ai-agent-studio-learning-path",
+    "https://blogs.oracle.com/fusioncoe/fusion-ai-agentic-apps-learning-path",
+    "https://blogs.oracle.com/fusioncoe/agentic-apps-core-concepts",
+    "https://blogs.oracle.com/fusioncoe/agentic-apps-ask-oracle-advisors",
+    "https://blogs.oracle.com/fusioncoe/agentic-apps-context-parameters",
+    "https://blogs.oracle.com/fusioncoe/agentic-apps-widgets",
+    "https://blogs.oracle.com/fusioncoe/agentic-apps-message-hints",
+    "https://blogs.oracle.com/fusioncoe/configure-agents-for-agentic-apps",
+    "https://blogs.oracle.com/fusioncoe/the-design-philosophy-of-agentic-apps",
+    "https://blogs.oracle.com/fusioncoe/what-are-agentic-apps",
+    "https://blogs.oracle.com/fusioncoe/securing-oracle-fusion-ai-agent-studio-setup-access-guide",
+    "https://blogs.oracle.com/fusioncoe/introducing-workflow-agents",
+    "https://blogs.oracle.com/fusioncoe/mcp-tool-in-ai-agent-studio",
+    "https://blogs.oracle.com/fusioncoe/code-node",
+    "https://blogs.oracle.com/fusioncoe/fusion-ai-agents-a2a-teaching-your-ai-agents-to-actually-talk-to-each-other",
+    "https://blogs.oracle.com/fusioncoe/understanding_ai_agent_studio",
+    "https://blogs.oracle.com/fusioncoe/microsoft-teams-integration-with-ai-agent-studio",
+    "https://blogs.oracle.com/fusioncoe/runtime-file-processor-tool-in-ai-agent-studio",
+    "https://blogs.oracle.com/fusioncoe/creating-evaluation-set-in-ai-agent-studio",
+    "https://blogs.oracle.com/fusioncoe/unlocking-insights-monitoring-and-evaluation-in-oracle-fusion-ai-agent-studio"
+  ]
+}
