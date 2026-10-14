@@ -2,6 +2,7 @@
   var triage = window.InvoiceTriage;
   var holds = [];
   var requestId = 0;
+  var buListWarning = "";
 
   var holdSelect = document.getElementById("filter-hold");
   var buSelect = document.getElementById("filter-bu");
@@ -28,28 +29,66 @@
   asOfEl.textContent = formatLongDate(asOf);
 
   holdSelect.addEventListener("change", render);
-  buSelect.addEventListener("change", render);
+  buSelect.addEventListener("change", load);
   searchInput.addEventListener("input", render);
   includeReleasedInput.addEventListener("change", load);
   refreshButton.addEventListener("click", load);
   clearButton.addEventListener("click", function () {
+    var reload = buSelect.value !== "all";
     holdSelect.value = "all";
     buSelect.value = "all";
     searchInput.value = "";
-    render();
+    if (reload) {
+      load();
+    } else {
+      render();
+    }
     searchInput.focus();
   });
 
-  load();
+  setBusy(true);
+  loadBusinessUnits().finally(function () {
+    load();
+  });
+
+  function selectedBusinessUnit() {
+    return buSelect.value && buSelect.value !== "all" ? buSelect.value : "";
+  }
+
+  function loadBusinessUnits() {
+    return fetch("/api/business-units")
+      .then(function (response) {
+        return response.json().then(function (body) {
+          return { ok: response.ok, body: body };
+        });
+      })
+      .then(function (result) {
+        var body = result.body || {};
+        if (!result.ok || body.ok === false) {
+          buListWarning = body.message || "The business unit list could not be loaded.";
+          return;
+        }
+        buListWarning = body.warning || "";
+        refill(buSelect, "All business units", body.businessUnits || []);
+      })
+      .catch(function () {
+        buListWarning = "The business unit list could not be loaded.";
+      });
+  }
 
   function load() {
     var id = ++requestId;
     var includeReleased = includeReleasedInput.checked;
+    var businessUnit = selectedBusinessUnit();
     setBusy(true);
     errorEl.hidden = true;
     metaEl.textContent = "Loading holds…";
 
-    fetch("/api/holds?includeReleased=" + (includeReleased ? "true" : "false"))
+    var query = "/api/holds?includeReleased=" + (includeReleased ? "true" : "false");
+    if (businessUnit) {
+      query += "&businessUnit=" + encodeURIComponent(businessUnit);
+    }
+    fetch(query)
       .then(function (response) {
         return response.json().then(function (body) {
           return { ok: response.ok, body: body };
@@ -112,6 +151,12 @@
       if (body.includeReleased) {
         noticeEl.textContent += " These examples are all open holds.";
       }
+    }
+    if (body.businessUnit) {
+      noticeEl.textContent += " Holds are limited to " + body.businessUnit + ".";
+    }
+    if (buListWarning) {
+      noticeEl.textContent += " Warning: " + buListWarning;
     }
     if (body.warning) {
       noticeEl.textContent += " Warning: " + body.warning;
@@ -242,9 +287,6 @@
     refill(holdSelect, "All hold types", holds.map(function (invoice) {
       return invoice.holdName;
     }));
-    refill(buSelect, "All business units", holds.map(function (invoice) {
-      return invoice.businessUnit;
-    }));
   }
 
   function refill(select, allLabel, values) {
@@ -280,6 +322,7 @@
   function setBusy(busy) {
     refreshButton.disabled = busy;
     includeReleasedInput.disabled = busy;
+    buSelect.disabled = busy;
     refreshButton.textContent = busy ? "Refreshing…" : "Refresh";
   }
 
