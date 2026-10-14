@@ -4,11 +4,13 @@
  */
 var assert = require("assert");
 var http = require("http");
-var triage = require("./triage.js");
+var triage = require("./public/triage.js");
 var invoices = require("./data.js");
 var oracle = require("./oracle.js");
 var envFile = require("./env.js");
 var server = require("./server.js");
+var access = require("./access.js");
+var holdsApi = require("./api/holds.js");
 
 var AS_OF = "2026-10-13";
 var failed = 0;
@@ -751,6 +753,144 @@ testAsync("include released keeps every open hold and caps only released holds",
       }));
     });
 });
+
+test("the access gate accepts any username when the password matches", function () {
+  assert.strictEqual(access.authorize(null, "").ok, true);
+  assert.strictEqual(access.authorize(null, undefined).ok, true);
+  var token = Buffer.from("anyone:open-sesame", "utf8").toString("base64");
+  var good = access.authorize("Basic " + token, "open-sesame");
+  assert.strictEqual(good.ok, true);
+  var otherUser = Buffer.from(":open-sesame", "utf8").toString("base64");
+  assert.strictEqual(access.authorize("Basic " + otherUser, "open-sesame").ok, true);
+  var wrong = access.authorize("Basic " + Buffer.from("anyone:nope", "utf8").toString("base64"), "open-sesame");
+  assert.strictEqual(wrong.ok, false);
+  assert.ok(wrong.authenticate.indexOf("Basic") === 0);
+  assert.strictEqual(wrong.message.indexOf("open-sesame"), -1);
+  var withColon = Buffer.from("user:pass:word", "utf8").toString("base64");
+  assert.strictEqual(access.authorize("Basic " + withColon, "pass:word").ok, true);
+});
+
+function basicHeader(username, password) {
+  return "Basic " + Buffer.from(username + ":" + password, "utf8").toString("base64");
+}
+
+testAsync("the local server asks for the access password before the page or API", function () {
+  var oracleCalls = 0;
+  var app = server.createApp({
+    env: {
+      APP_ACCESS_PASSWORD: "gate-secret",
+      ORACLE_FUSION_URL: "https://fa-example.example.com",
+      ORACLE_FUSION_USER: "fin_impl",
+      ORACLE_FUSION_PASSWORD: "oracle-secret",
+    },
+    fetch: function () {
+      oracleCalls += 1;
+      return jsonResult(200, { items: [], hasMore: false, limit: 1, offset: 0, count: 0 });
+    },
+  });
+  var httpServer;
+  return listen(app)
+    .then(function (started) {
+      httpServer = started;
+      return getJson(httpServer, "/api/holds");
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 401);
+      assert.strictEqual(result.body, "Sign in to view invoice holds.");
+      assert.strictEqual(String(result.body).indexOf("oracle-secret"), -1);
+      assert.strictEqual(oracleCalls, 0);
+      return fetch("http://127.0.0.1:" + httpServer.address().port + "/", {
+        headers: { Authorization: basicHeader("pat", "wrong") },
+      });
+    })
+    .then(function (response) {
+      assert.strictEqual(response.status, 401);
+      assert.strictEqual(oracleCalls, 0);
+      return fetch("http://127.0.0.1:" + httpServer.address().port + "/api/holds", {
+        headers: { Authorization: basicHeader("anyone", "gate-secret") },
+      });
+    })
+    .then(function (response) {
+      assert.strictEqual(response.status, 200);
+      assert.ok(oracleCalls > 0);
+      return response.text();
+    })
+    .then(function (text) {
+      assert.strictEqual(text.indexOf("oracle-secret"), -1);
+      var body = JSON.parse(text);
+      assert.strictEqual(body.mode, "live");
+      return fetch("http://127.0.0.1:" + httpServer.address().port + "/", {
+        headers: { Authorization: basicHeader("anyone", "gate-secret") },
+      });
+    })
+    .then(function (response) {
+      assert.strictEqual(response.status, 200);
+      return response.text();
+    })
+    .then(function (html) {
+      assert.ok(html.indexOf("Invoice hold triage") !== -1);
+      assert.strictEqual(html.indexOf("oracle-secret"), -1);
+      assert.strictEqual(html.indexOf("ORACLE_FUSION_PASSWORD"), -1);
+    })
+    .finally(function () {
+      if (httpServer) {
+        httpServer.close();
+      }
+    });
+});
+
+testAsync("the Vercel holds function uses the same gate and does not leak Oracle settings", function () {
+  var previous = process.env.APP_ACCESS_PASSWORD;
+  process.env.APP_ACCESS_PASSWORD = "gate-secret";
+  var res = mockResponse();
+  return Promise.resolve(
+    holdsApi({ method: "GET", url: "/api/holds", headers: {} }, res)
+  )
+    .then(function () {
+      assert.strictEqual(res.statusCode, 401);
+      assert.ok(String(res.headers["WWW-Authenticate"]).indexOf("Basic") === 0);
+      assert.strictEqual(res.body.indexOf("gate-secret"), -1);
+      var ok = mockResponse();
+      return holdsApi(
+        {
+          method: "GET",
+          url: "/api/holds",
+          headers: { authorization: basicHeader("x", "gate-secret") },
+        },
+        ok
+      ).then(function () {
+        return ok;
+      });
+    })
+    .then(function (ok) {
+      var body = JSON.parse(ok.body);
+      assert.strictEqual(ok.statusCode, 200);
+      assert.strictEqual(body.mode, "sample");
+      assert.strictEqual(JSON.stringify(body).indexOf("gate-secret"), -1);
+    })
+    .finally(function () {
+      if (previous === undefined) {
+        delete process.env.APP_ACCESS_PASSWORD;
+      } else {
+        process.env.APP_ACCESS_PASSWORD = previous;
+      }
+    });
+});
+
+function mockResponse() {
+  return {
+    statusCode: 0,
+    headers: {},
+    body: "",
+    writeHead: function (status, headers) {
+      this.statusCode = status;
+      this.headers = headers || {};
+    },
+    end: function (body) {
+      this.body = body || "";
+    },
+  };
+}
 
 if (pending === 0) {
   finish();

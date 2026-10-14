@@ -1,15 +1,17 @@
 /**
- * Serves the triage page and /api/holds.
+ * Local server for the triage page and /api/holds.
+ * On Vercel, public/ is static and api/holds.js is the same API.
  * Oracle credentials stay in environment variables and are not sent to the browser.
  */
 var http = require("http");
 var fs = require("fs");
 var path = require("path");
 var envFile = require("./env.js");
-var oracle = require("./oracle.js");
-var sample = require("./data.js");
+var access = require("./access.js");
+var holds = require("./holds.js");
 
 var ROOT = __dirname;
+var PUBLIC = path.join(ROOT, "public");
 var FILES = {
   "/": "index.html",
   "/index.html": "index.html",
@@ -23,38 +25,8 @@ var TYPES = {
   ".js": "text/javascript; charset=utf-8",
 };
 
-function sampleHolds() {
-  return sample.map(function (row) {
-    return {
-      holdId: null,
-      supplier: row.supplier,
-      invoiceNumber: row.invoiceNumber,
-      amount: row.amount,
-      currency: row.currency,
-      holdName: row.holdName,
-      holdDate: row.holdDate,
-      businessUnit: row.businessUnit,
-      released: false,
-      releaseDate: "",
-      holdReason: "",
-      holdDetails: "",
-      lineHeld: "",
-      workflowStatus: "",
-      heldBy: "",
-    };
-  });
-}
-
-function sendJson(res, status, body) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(body));
-}
-
 function sendFile(res, fileName) {
-  var filePath = path.join(ROOT, fileName);
+  var filePath = path.join(PUBLIC, fileName);
   var body = fs.readFileSync(filePath);
   res.writeHead(200, {
     "Content-Type": TYPES[path.extname(fileName)] || "application/octet-stream",
@@ -63,50 +35,13 @@ function sendFile(res, fileName) {
   res.end(body);
 }
 
-function handleHolds(url, env, fetchImpl, res) {
-  var includeReleased = url.searchParams.get("includeReleased") === "true";
-  var creds = envFile.fusionConfig(env);
-  if (!creds) {
-    sendJson(res, 200, {
-      ok: true,
-      mode: "sample",
-      refreshedAt: new Date().toISOString(),
-      includeReleased: includeReleased,
-      warning: null,
-      holds: sampleHolds(),
-    });
-    return;
-  }
-
-  oracle
-    .loadHolds({
-      baseUrl: creds.baseUrl,
-      user: creds.user,
-      password: creds.password,
-      includeReleased: includeReleased,
-      fetch: fetchImpl,
-    })
-    .then(function (result) {
-      sendJson(res, 200, {
-        ok: true,
-        mode: "live",
-        refreshedAt: new Date().toISOString(),
-        includeReleased: includeReleased,
-        warning: result.warning,
-        holds: result.holds,
-      });
-    })
-    .catch(function (err) {
-      var body = oracle.publicError(err);
-      var status = body.kind === "login" ? 401 : 502;
-      console.error("Oracle request failed:", body.kind, err && err.status ? err.status : "");
-      sendJson(res, status, {
-        ok: false,
-        mode: "live",
-        error: body.kind,
-        message: body.message,
-      });
-    });
+function deny(res, decision) {
+  res.writeHead(401, {
+    "WWW-Authenticate": decision.authenticate,
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(decision.message);
 }
 
 function createApp(options) {
@@ -116,13 +51,18 @@ function createApp(options) {
 
   return function app(req, res) {
     var url = new URL(req.url, "http://127.0.0.1");
-    if (url.pathname === "/api/holds" && req.method === "GET") {
-      handleHolds(url, env, fetchImpl, res);
-      return;
-    }
     if (url.pathname === "/favicon.ico") {
       res.writeHead(204);
       res.end();
+      return;
+    }
+    var decision = access.authorize(access.headerFromRequest(req), env.APP_ACCESS_PASSWORD);
+    if (!decision.ok) {
+      deny(res, decision);
+      return;
+    }
+    if (url.pathname === "/api/holds" && req.method === "GET") {
+      holds.handleHolds(url, env, fetchImpl, res);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -158,6 +98,9 @@ function start() {
     } else {
       console.log("Oracle settings found for user " + creds.user + ". The page will load live holds.");
     }
+    if (access.isGateEnabled(process.env.APP_ACCESS_PASSWORD)) {
+      console.log("Access password is set. The browser will ask for it.");
+    }
     console.log("Open http://" + host + ":" + port);
   });
   return server;
@@ -169,5 +112,5 @@ if (require.main === module) {
 
 module.exports = {
   createApp: createApp,
-  sampleHolds: sampleHolds,
+  sampleHolds: holds.sampleHolds,
 };
