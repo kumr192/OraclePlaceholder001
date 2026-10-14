@@ -665,8 +665,8 @@ testAsync("an empty open-hold query warns and does not page every released hold"
     });
 });
 
-testAsync("include released keeps only the recent cap and still matches amounts by invoice id", function () {
-  var holdCalls = 0;
+testAsync("include released keeps every open hold and caps only released holds", function () {
+  var queries = [];
   return oracle
     .loadHolds({
       baseUrl: "https://fa-example.example.com",
@@ -677,33 +677,45 @@ testAsync("include released keeps only the recent cap and still matches amounts 
       fetch: function (url) {
         var parsed = new URL(url);
         if (parsed.pathname.indexOf("invoiceHolds") !== -1) {
-          holdCalls += 1;
+          var q = parsed.searchParams.get("q");
+          queries.push(q);
+          if (q === "ReleaseName IS NULL") {
+            assert.strictEqual(parsed.searchParams.get("orderBy"), null);
+            assert.ok(Number(parsed.searchParams.get("limit")) > 2);
+            return jsonResult(200, {
+              items: [openHold("O-1", 11), openHold("O-2", 12), openHold("O-3", 13)],
+              hasMore: false,
+              limit: 500,
+              offset: 0,
+            });
+          }
+          assert.strictEqual(q, "ReleaseName IS NOT NULL");
           assert.strictEqual(parsed.searchParams.get("orderBy"), "HoldDate:desc");
           assert.strictEqual(parsed.searchParams.get("limit"), "2");
           assert.strictEqual(parsed.searchParams.get("offset"), "0");
           return jsonResult(200, {
             items: [
               {
-                HoldId: "r1",
-                InvoiceNumber: "R1",
+                HoldId: "O-1",
+                InvoiceNumber: "O-1",
                 Supplier: "Hold Supplier",
                 BusinessUnit: "Vision Operations",
                 ReleaseName: "Amount",
-                ReleaseDate: "2026-02-01T00:00:00+00:00",
-                HoldDate: "2026-02-01T00:00:00+00:00",
+                ReleaseDate: "2026-03-01T00:00:00+00:00",
+                HoldDate: "2026-03-01T00:00:00+00:00",
                 HoldName: "Amount",
-                links: [parentLink(41)],
+                links: [parentLink(11)],
               },
               {
-                HoldId: "r2",
-                InvoiceNumber: "R2",
+                HoldId: "R-9",
+                InvoiceNumber: "R-9",
                 Supplier: "Hold Supplier",
                 BusinessUnit: "Vision Operations",
                 ReleaseName: "Price",
-                ReleaseDate: "2026-01-01T00:00:00+00:00",
-                HoldDate: "2026-01-01T00:00:00+00:00",
+                ReleaseDate: "2026-02-01T00:00:00+00:00",
+                HoldDate: "2026-02-01T00:00:00+00:00",
                 HoldName: "Price",
-                links: [parentLink(42)],
+                links: [parentLink(19)],
               },
             ],
             hasMore: true,
@@ -715,7 +727,7 @@ testAsync("include released keeps only the recent cap and still matches amounts 
         assert.ok(idMatch);
         return jsonResult(200, {
           InvoiceId: Number(idMatch[1]),
-          InvoiceNumber: "R" + idMatch[1],
+          InvoiceNumber: "INV-" + idMatch[1],
           BusinessUnit: "Elsewhere",
           Supplier: "Someone Else",
           InvoiceAmount: 10,
@@ -724,10 +736,16 @@ testAsync("include released keeps only the recent cap and still matches amounts 
       },
     })
     .then(function (result) {
-      assert.strictEqual(holdCalls, 1);
-      assert.strictEqual(result.holds.length, 2);
+      assert.deepStrictEqual(queries, ["ReleaseName IS NULL", "ReleaseName IS NOT NULL"]);
+      assert.deepStrictEqual(
+        result.holds.map(function (hold) {
+          return hold.holdId;
+        }),
+        ["O-1", "O-2", "O-3", "R-9"]
+      );
       assert.strictEqual(result.truncated, true);
-      assert.ok(result.warning.indexOf("2 most recent") !== -1);
+      assert.ok(result.warning.indexOf("Only released holds are capped") === 0);
+      assert.ok(result.warning.indexOf("2 most recent released holds") !== -1);
       assert.ok(result.holds.every(function (hold) {
         return hold.amount === 10 && hold.currency === "USD";
       }));

@@ -17,6 +17,7 @@ var RELEASED_HOLD_CAP = 500;
 var INVOICE_CONCURRENCY = 6;
 var OPEN_HOLD_QUERY = "ReleaseName IS NULL";
 var OPEN_HOLD_QUERY_FALLBACK = "ReleaseName IS NULL;ReleaseDate IS NULL";
+var RELEASED_HOLD_QUERY = "ReleaseName IS NOT NULL";
 var INVOICE_FIELDS = "InvoiceId,InvoiceNumber,BusinessUnit,Supplier,InvoiceAmount,InvoiceCurrency";
 
 function OracleRequestError(kind, status, message) {
@@ -294,11 +295,23 @@ async function fetchOpenHolds(config, origin) {
 
 async function fetchReleasedHolds(config, origin) {
   var cap = config.releasedCap || RELEASED_HOLD_CAP;
-  var page = await fetchHoldQuery(config, origin, null, "HoldDate:desc", cap);
-  if (page.items.length === 0 && !page.warning) {
-    page.warning = "Oracle returned no invoice holds.";
-  }
-  return page;
+  return fetchHoldQuery(config, origin, RELEASED_HOLD_QUERY, "HoldDate:desc", cap);
+}
+
+function dedupeHolds(items) {
+  var seen = {};
+  var unique = [];
+  (items || []).forEach(function (item) {
+    var id = item && item.HoldId != null ? String(item.HoldId) : "";
+    if (id) {
+      if (seen[id]) {
+        return;
+      }
+      seen[id] = true;
+    }
+    unique.push(item);
+  });
+  return unique;
 }
 
 function selectOpenHolds(rawItems, includeReleased) {
@@ -554,26 +567,39 @@ async function fetchInvoicesForHolds(config, origin, rawHolds) {
   return { rows: rows, failures: failures };
 }
 
-function truncationWarning(includeReleased, count) {
-  if (includeReleased) {
-    return (
-      "Showing the " +
-      count +
-      " most recent holds so this stays fast. Older holds were not loaded."
-    );
-  }
+function releasedCapWarning(count) {
+  return (
+    "Only released holds are capped. Showing the " +
+    count +
+    " most recent released holds. Older released holds were not loaded."
+  );
+}
+
+function openCapWarning(count) {
   return "Showing the first " + count + " open holds. More open holds were not loaded.";
 }
 
 async function loadHolds(config) {
   var origin = siteRoot(config.baseUrl);
-  var fetched = config.includeReleased
-    ? await fetchReleasedHolds(config, origin)
-    : await fetchOpenHolds(config, origin);
-  var selected = selectOpenHolds(fetched.items, config.includeReleased);
-  var warning = fetched.warning;
-  if (fetched.truncated) {
-    warning = joinWarning(warning, truncationWarning(config.includeReleased, selected.length));
+  var open = await fetchOpenHolds(config, origin);
+  var released = { items: [], truncated: false, warning: null };
+  if (config.includeReleased) {
+    released = await fetchReleasedHolds(config, origin);
+  }
+  var openItems = selectOpenHolds(open.items, false);
+  if (config.includeReleased && openItems.length === 0 && released.items.length > 0) {
+    open.warning = null;
+  }
+  var selected = config.includeReleased ? dedupeHolds(openItems.concat(released.items)) : openItems;
+  var warning = joinWarning(open.warning, released.warning);
+  if (open.truncated) {
+    warning = joinWarning(warning, openCapWarning(openItems.length));
+  }
+  if (released.truncated) {
+    warning = joinWarning(warning, releasedCapWarning(released.items.length));
+  }
+  if (selected.length === 0 && !warning) {
+    warning = "Oracle returned no invoice holds.";
   }
   var invoiceResult = { rows: [], failures: 0 };
   if (selected.length > 0) {
@@ -590,7 +616,7 @@ async function loadHolds(config) {
   return {
     holds: mapHolds(selected, invoiceResult.rows),
     warning: warning,
-    truncated: Boolean(fetched.truncated),
+    truncated: Boolean(open.truncated || released.truncated),
   };
 }
 
@@ -611,6 +637,8 @@ module.exports = {
   HOLD_COLLECTION: HOLD_COLLECTION,
   INVOICE_COLLECTION: INVOICE_COLLECTION,
   OPEN_HOLD_QUERY: OPEN_HOLD_QUERY,
+  RELEASED_HOLD_QUERY: RELEASED_HOLD_QUERY,
+  dedupeHolds: dedupeHolds,
   OPEN_HOLD_CAP: OPEN_HOLD_CAP,
   RELEASED_HOLD_CAP: RELEASED_HOLD_CAP,
 };

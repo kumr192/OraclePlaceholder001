@@ -104,7 +104,7 @@
     noticeEl.className = live ? "notice notice-live" : "notice";
     if (live) {
       noticeEl.textContent = body.includeReleased
-        ? "Live from Oracle Fusion. Open and released holds are both included."
+        ? "Live from Oracle Fusion. All open holds are included, plus released holds."
         : "Live from Oracle Fusion. Only open holds are shown. Released holds stay hidden until you include them.";
     } else {
       noticeEl.textContent =
