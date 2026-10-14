@@ -59,8 +59,15 @@ h1 {
   color: #d5dee6;
 }
 
+.source-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .example-badge {
-  margin: 4px 0 0;
+  margin: 0;
   flex: none;
   border: 1px solid #e2c7a4;
   color: #f8efe4;
@@ -71,6 +78,43 @@ h1 {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.badge-live {
+  border-color: #9fd8c2;
+  background: rgba(15, 110, 99, 0.45);
+  color: #e7f6f3;
+}
+
+.badge-error {
+  border-color: #f0b4ae;
+  background: rgba(143, 45, 45, 0.45);
+  color: #fdecea;
+}
+
+.refreshed {
+  margin: 0;
+  color: #d5dee6;
+  font-size: 0.82rem;
+}
+
+.refresh {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid #e2c7a4;
+  background: transparent;
+  color: #f8efe4;
+  cursor: pointer;
+}
+
+.refresh:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.refresh:disabled {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 main {
@@ -86,6 +130,18 @@ main {
   border: 1px solid #ead3b6;
   border-radius: 10px;
   color: #5c4630;
+}
+
+.notice-live {
+  background: #eef8f5;
+  border-color: #b7ddd4;
+  color: #1d4a43;
+}
+
+.notice-error {
+  background: #fdecea;
+  border-color: #e7b6b2;
+  color: #6f2424;
 }
 
 .cards {
@@ -209,6 +265,25 @@ select {
   background: #fff;
 }
 
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--navy);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+
 input:focus,
 select:focus,
 button:focus-visible {
@@ -289,13 +364,26 @@ tbody tr:hover {
   font-size: 0.92rem;
 }
 
-.hold-pill {
+.hold-pill,
+.status {
   display: inline-block;
   padding: 3px 8px;
   border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
+  background: #eef1f4;
+  color: #31404d;
+}
+
+.status-open {
+  background: #e7f6f3;
+  color: #0f6e63;
+}
+
+.status-released {
+  background: #eef1f4;
+  color: #5d6b78;
 }
 
 .hold-qty-ord {
@@ -353,6 +441,10 @@ footer {
   .masthead-inner {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .source-block {
+    align-items: flex-start;
   }
 
   h1 {

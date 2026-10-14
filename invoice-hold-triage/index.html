@@ -3,39 +3,41 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Invoice Hold Triage — Example data</title>
+    <title>Invoice hold triage</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="masthead">
       <div class="masthead-inner">
         <div>
-          <p class="eyebrow">Payables desk · example</p>
+          <p class="eyebrow">Payables desk</p>
           <h1>Invoice hold triage</h1>
           <p class="lede">
-            Review sample invoices sitting on Oracle Fusion Payables holds, then follow the suggested next step for each hold type.
+            Review invoice holds from Oracle Fusion Payables, then follow the suggested next step for each hold.
           </p>
         </div>
-        <p class="example-badge" role="status">Example data</p>
+        <div class="source-block">
+          <p id="source-badge" class="example-badge" role="status">Loading</p>
+          <p id="refreshed-line" class="refreshed"></p>
+          <button id="refresh" type="button" class="refresh">Refresh</button>
+        </div>
       </div>
     </header>
 
     <main>
-      <p class="notice">
-        <strong>EXAMPLE DATA.</strong>
-        These invoices, suppliers, amounts, and holds are fictional. This page is not connected to Oracle Fusion, Oracle Cloud, or any live ledger.
-      </p>
+      <p id="notice" class="notice">Loading holds…</p>
+      <p id="error" class="notice notice-error" role="alert" hidden></p>
 
       <section class="cards" aria-label="Hold summary">
         <article class="card">
           <h2>Invoices on hold</h2>
           <p id="stat-count" class="stat">0</p>
-          <p class="stat-note">In the current filter</p>
+          <p id="stat-count-note" class="stat-note">In the current filter</p>
         </article>
         <article class="card">
           <h2>Amount on hold</h2>
           <div id="stat-amount" class="stat-amount"></div>
-          <p class="stat-note">By currency, not converted</p>
+          <p id="stat-amount-note" class="stat-note">By currency, not converted</p>
         </article>
         <article class="card">
           <h2>Oldest hold</h2>
@@ -68,6 +70,10 @@
               <option value="all">All business units</option>
             </select>
           </div>
+          <label class="check" for="include-released">
+            <input id="include-released" type="checkbox" />
+            Include released holds
+          </label>
           <button id="clear-filters" type="button" class="ghost">Clear</button>
         </div>
         <p id="result-meta" class="meta" aria-live="polite"></p>
@@ -75,7 +81,7 @@
         <div class="table-scroll">
           <table>
             <caption class="sr-only">
-              Example invoices currently on hold, oldest first
+              Invoice holds, oldest first
             </caption>
             <thead>
               <tr>
@@ -84,6 +90,7 @@
                 <th scope="col" class="num">Amount</th>
                 <th scope="col">Currency</th>
                 <th scope="col">Hold name</th>
+                <th scope="col">Status</th>
                 <th scope="col">Hold date</th>
                 <th scope="col" class="num">Age (days)</th>
                 <th scope="col">Business unit</th>
@@ -94,17 +101,16 @@
           </table>
         </div>
         <p id="empty-state" class="empty" hidden>
-          No example invoices match these filters. Clear the search or choose another hold type or business unit.
+          No holds match these filters. Clear the search or choose another hold type or business unit.
         </p>
       </section>
     </main>
 
     <footer>
-      Demonstration only. Suggested actions are simple rules for this sample, not Oracle policy or an approval workflow.
+      Suggested actions are simple rules based on the hold name. They are not an Oracle approval workflow.
     </footer>
 
     <script src="triage.js"></script>
-    <script src="data.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
