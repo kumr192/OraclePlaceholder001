@@ -1,10 +1,14 @@
 /**
- * Node checks for summary totals, hold age, filters, and suggested actions.
- * Run from this folder: node test.js
+ * Node checks for summary totals, hold mapping, paging, and suggested actions.
+ * Oracle calls are mocked. Run from this folder: node test.js
  */
 var assert = require("assert");
+var http = require("http");
 var triage = require("./triage.js");
 var invoices = require("./data.js");
+var oracle = require("./oracle.js");
+var envFile = require("./env.js");
+var server = require("./server.js");
 
 var AS_OF = "2026-10-13";
 var failed = 0;
@@ -119,12 +123,461 @@ test("each sample hold type has rule-based advice", function () {
     assert.ok(advice.length > 40);
   });
   assert.ok(triage.suggestedAction("Price").toLowerCase().indexOf("price") !== -1);
+  assert.ok(triage.suggestedAction("qty rec").toLowerCase().indexOf("received") !== -1);
   assert.strictEqual(triage.suggestedAction("Not A Hold"), triage.FALLBACK_ACTION);
+  assert.ok(triage.suggestedAction("Custom Hold", "Supplier bank account is missing").indexOf("bank account") !== -1);
 });
 
-if (failed > 0) {
-  console.error("\n" + failed + " check(s) failed.");
-  process.exit(1);
+test("duplicate holds on one invoice are counted once in the amount", function () {
+  var summary = triage.summarize(
+    [
+      {
+        supplier: "Apex",
+        invoiceNumber: "100",
+        businessUnit: "Vision Operations",
+        amount: 50,
+        currency: "USD",
+        holdDate: "2026-10-01",
+        holdName: "Price",
+      },
+      {
+        supplier: "Apex",
+        invoiceNumber: "100",
+        businessUnit: "Vision Operations",
+        amount: 50,
+        currency: "USD",
+        holdDate: "2026-09-01",
+        holdName: "Funds",
+      },
+      {
+        supplier: "Apex",
+        invoiceNumber: "200",
+        businessUnit: "Vision Operations",
+        amount: null,
+        currency: "",
+        holdDate: "2026-10-10",
+        holdName: "Tax",
+      },
+    ],
+    AS_OF
+  );
+  assert.strictEqual(summary.invoiceCount, 2);
+  assert.strictEqual(summary.holdCount, 3);
+  assert.strictEqual(summary.missingAmountCount, 1);
+  assert.strictEqual(summary.totalsByCurrency.USD, 50);
+  assert.strictEqual(summary.oldestInvoiceNumber, "100");
+});
+
+test("settings are missing until url, user, and password are all set", function () {
+  assert.strictEqual(envFile.fusionConfig({}), null);
+  assert.strictEqual(
+    envFile.fusionConfig({
+      ORACLE_FUSION_URL: "https://example.test",
+      ORACLE_FUSION_USER: "fin_impl",
+      ORACLE_FUSION_PASSWORD: "",
+    }),
+    null
+  );
+  var parsed = envFile.parseEnv("# comment\nORACLE_FUSION_USER=fin_impl\nORACLE_FUSION_PASSWORD=\"keep me\"\n\n");
+  assert.strictEqual(parsed.ORACLE_FUSION_USER, "fin_impl");
+  assert.strictEqual(parsed.ORACLE_FUSION_PASSWORD, "keep me");
+});
+
+test("an Oracle hold maps onto the triage row and joins the invoice amount", function () {
+  var raw = {
+    HoldId: 300100187353833,
+    InvoiceNumber: "AND_Unmatched_Invoice",
+    BusinessUnit: "Vision Operations",
+    Supplier: "Advanced Network Devices",
+    LineHeld: null,
+    HoldDate: "2020-05-29T06:53:19.001+00:00",
+    HoldDetails: null,
+    HoldReason: "Invoice amount exceeded limit.",
+    ReleaseReason: null,
+    WorkflowStatus: null,
+    ReleaseName: null,
+    HoldName: "Amount",
+    ReleaseDate: null,
+    HeldBy: "Kerry Jones",
+    CreatedBy: "AP_SUPV_OPERATIONS",
+    CreationDate: "2020-05-29T06:53:19.001+00:00",
+  };
+  var released = Object.assign({}, raw, {
+    HoldId: 2,
+    InvoiceNumber: "PAID-1",
+    ReleaseDate: "2020-06-01T00:00:00+00:00",
+    HoldName: "Qty Rec",
+  });
+  var rows = oracle.mapHolds(oracle.selectOpenHolds([raw, released], false), [
+    {
+      InvoiceNumber: "AND_Unmatched_Invoice",
+      BusinessUnit: "Vision Operations",
+      Supplier: "Advanced Network Devices",
+      InvoiceAmount: 1500.5,
+      InvoiceCurrency: "USD",
+    },
+  ]);
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].invoiceNumber, "AND_Unmatched_Invoice");
+  assert.strictEqual(rows[0].holdDate, "2020-05-29");
+  assert.strictEqual(rows[0].released, false);
+  assert.strictEqual(rows[0].amount, 1500.5);
+  assert.strictEqual(rows[0].currency, "USD");
+  assert.strictEqual(rows[0].holdName, "Amount");
+  assert.ok(triage.suggestedAction(rows[0].holdName, rows[0].holdReason).toLowerCase().indexOf("amount") !== -1);
+});
+
+var pending = 0;
+
+function testAsync(name, fn) {
+  pending += 1;
+  Promise.resolve()
+    .then(fn)
+    .then(function () {
+      console.log("PASS  " + name);
+    })
+    .catch(function (err) {
+      failed += 1;
+      console.error("FAIL  " + name);
+      console.error(err && err.stack ? err.stack : err);
+    })
+    .finally(function () {
+      pending -= 1;
+      if (pending === 0) {
+        finish();
+      }
+    });
 }
 
-console.log("\nAll checks passed.");
+function finish() {
+  if (failed > 0) {
+    console.error("\n" + failed + " check(s) failed.");
+    process.exit(1);
+  }
+  console.log("\nAll checks passed.");
+}
+
+testAsync("paging follows hasMore and offset, then keeps only open holds", function () {
+  var offsets = [];
+  return oracle
+    .collectPages(function (offset) {
+      offsets.push(offset);
+      if (offset === 0) {
+        return Promise.resolve({
+          items: [
+            { HoldId: 1, InvoiceNumber: "A", ReleaseDate: null },
+            { HoldId: 2, InvoiceNumber: "B", ReleaseDate: null },
+          ],
+          hasMore: true,
+          limit: 2,
+          offset: 0,
+        });
+      }
+      return Promise.resolve({
+        items: [
+          { HoldId: 3, InvoiceNumber: "C", ReleaseDate: "2026-01-01" },
+          { HoldId: 4, InvoiceNumber: "D", ReleaseDate: null },
+        ],
+        hasMore: false,
+        limit: 2,
+        offset: 2,
+      });
+    })
+    .then(function (items) {
+      assert.deepStrictEqual(offsets, [0, 2]);
+      assert.strictEqual(items.length, 4);
+      var open = oracle.selectOpenHolds(items, false);
+      assert.deepStrictEqual(
+        open.map(function (item) {
+          return item.HoldId;
+        }),
+        [1, 2, 4]
+      );
+    });
+});
+
+testAsync("paging stops when Oracle repeats the same offset", function () {
+  return oracle
+    .collectPages(function () {
+      return Promise.resolve({
+        items: [{ HoldId: 1 }],
+        hasMore: true,
+        limit: 0,
+        offset: 0,
+      });
+    })
+    .then(function () {
+      throw new Error("expected paging to fail");
+    })
+    .catch(function (err) {
+      if (err && err.message === "expected paging to fail") {
+        throw err;
+      }
+      assert.strictEqual(err.kind, "oracle");
+    });
+});
+
+function mockFusion(password) {
+  return function (url, options) {
+    var parsed = new URL(url);
+    var header = options.headers.Authorization;
+    assert.strictEqual(header.indexOf(password), -1);
+    assert.strictEqual(header, "Basic " + Buffer.from("fin_impl:" + password).toString("base64"));
+    if (parsed.pathname.indexOf("invoiceHolds") !== -1) {
+      var q = parsed.searchParams.get("q");
+      var offset = Number(parsed.searchParams.get("offset"));
+      if (q === "ReleaseDate IS NULL" && offset === 0) {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          text: function () {
+            return Promise.resolve("bad query");
+          },
+          json: function () {
+            return Promise.resolve({});
+          },
+        });
+      }
+      assert.strictEqual(parsed.searchParams.get("onlyData"), "true");
+      if (offset === 0) {
+        return jsonResult(200, {
+          items: [openHold("A-1"), openHold("A-2")],
+          hasMore: true,
+          limit: 500,
+          offset: 0,
+        });
+      }
+      return jsonResult(200, {
+        items: [releasedHold("B-9"), openHold("C-3")],
+        hasMore: false,
+        limit: 500,
+        offset: 500,
+      });
+    }
+    if (parsed.pathname.indexOf("/invoices") !== -1) {
+      return jsonResult(200, {
+        items: [
+          {
+            InvoiceNumber: "A-1",
+            BusinessUnit: "Vision Operations",
+            Supplier: "Advanced Network Devices",
+            InvoiceAmount: 80,
+            InvoiceCurrency: "USD",
+          },
+          {
+            InvoiceNumber: "C-3",
+            BusinessUnit: "Vision Operations",
+            Supplier: "Other Supplier",
+            InvoiceAmount: 20,
+            InvoiceCurrency: "EUR",
+          },
+        ],
+        hasMore: false,
+        limit: 500,
+        offset: 0,
+      });
+    }
+    throw new Error("unexpected url " + url);
+  };
+}
+
+function openHold(number) {
+  return {
+    HoldId: number,
+    InvoiceNumber: number,
+    BusinessUnit: "Vision Operations",
+    Supplier: number === "C-3" ? "Other Supplier" : "Advanced Network Devices",
+    HoldDate: "2026-08-01T00:00:00+00:00",
+    HoldName: number === "C-3" ? "Qty Rec" : "Price",
+    HoldReason: null,
+    ReleaseDate: null,
+  };
+}
+
+function releasedHold(number) {
+  return Object.assign(openHold(number), { ReleaseDate: "2026-09-01T00:00:00+00:00", HoldName: "Funds" });
+}
+
+function jsonResult(status, body) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status: status,
+    text: function () {
+      return Promise.resolve(JSON.stringify(body));
+    },
+    json: function () {
+      return Promise.resolve(body);
+    },
+  });
+}
+
+testAsync("live load pages holds, drops released rows, and does not leak the password", function () {
+  var password = "s3cret-value";
+  return oracle
+    .loadHolds({
+      baseUrl: "https://fa-example.example.com/fscmRestApi",
+      user: "fin_impl",
+      password: password,
+      includeReleased: false,
+      fetch: mockFusion(password),
+    })
+    .then(function (result) {
+      assert.strictEqual(result.warning, null);
+      assert.deepStrictEqual(
+        result.holds.map(function (hold) {
+          return hold.invoiceNumber;
+        }),
+        ["A-1", "A-2", "C-3"]
+      );
+      assert.strictEqual(result.holds[0].amount, 80);
+      assert.strictEqual(result.holds[0].currency, "USD");
+      assert.strictEqual(result.holds[2].amount, 20);
+      assert.strictEqual(result.holds[2].currency, "EUR");
+      assert.strictEqual(JSON.stringify(result).indexOf(password), -1);
+      assert.strictEqual(oracle.siteRoot("https://fa-example.example.com/fscmRestApi"), "https://fa-example.example.com");
+    });
+});
+
+testAsync("a rejected sign-in is reported without calling invoices", function () {
+  var calls = 0;
+  return oracle
+    .loadHolds({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "nope",
+      includeReleased: false,
+      fetch: function () {
+        calls += 1;
+        return jsonResult(401, { detail: "Unauthorized" });
+      },
+    })
+    .then(function () {
+      throw new Error("expected login failure");
+    })
+    .catch(function (err) {
+      if (err && err.message === "expected login failure") {
+        throw err;
+      }
+      assert.strictEqual(err.kind, "login");
+      assert.ok(err.message.indexOf("sign-in") !== -1);
+      assert.strictEqual(err.message.indexOf("nope"), -1);
+      assert.strictEqual(calls, 1);
+    });
+});
+
+testAsync("a network failure stays a network error", function () {
+  return oracle
+    .loadHolds({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "pw",
+      includeReleased: true,
+      fetch: function () {
+        return Promise.reject(new Error("connect ECONNREFUSED"));
+      },
+    })
+    .then(function () {
+      throw new Error("expected network failure");
+    })
+    .catch(function (err) {
+      if (err && err.message === "expected network failure") {
+        throw err;
+      }
+      assert.strictEqual(err.kind, "network");
+      assert.ok(err.message.indexOf("Could not reach") !== -1);
+    });
+});
+
+function listen(app) {
+  return new Promise(function (resolve) {
+    var httpServer = http.createServer(app);
+    httpServer.listen(0, "127.0.0.1", function () {
+      resolve(httpServer);
+    });
+  });
+}
+
+function getJson(httpServer, path) {
+  var port = httpServer.address().port;
+  return fetch("http://127.0.0.1:" + port + path).then(function (response) {
+    return response.text().then(function (text) {
+      var body = null;
+      try {
+        body = JSON.parse(text);
+      } catch (err) {
+        body = text;
+      }
+      return { status: response.status, body: body };
+    });
+  });
+}
+
+testAsync("missing settings serve labeled sample data and hide server files", function () {
+  var app = server.createApp({ env: {}, fetch: function () {
+    throw new Error("Oracle must not be called");
+  } });
+  var httpServer;
+  return listen(app)
+    .then(function (started) {
+      httpServer = started;
+      return getJson(httpServer, "/api/holds");
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(result.body.mode, "sample");
+      assert.strictEqual(result.body.holds.length, 15);
+      assert.strictEqual(result.body.holds[0].released, false);
+      return getJson(httpServer, "/.env");
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 404);
+      return getJson(httpServer, "/server.js");
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 404);
+    })
+    .finally(function () {
+      if (httpServer) {
+        httpServer.close();
+      }
+    });
+});
+
+testAsync("the API returns live rows from a mocked Oracle and omits the password", function () {
+  var password = "s3cret-value";
+  var app = server.createApp({
+    env: {
+      ORACLE_FUSION_URL: "https://fa-example.example.com",
+      ORACLE_FUSION_USER: "fin_impl",
+      ORACLE_FUSION_PASSWORD: password,
+    },
+    fetch: mockFusion(password),
+  });
+  var httpServer;
+  return listen(app)
+    .then(function (started) {
+      httpServer = started;
+      return getJson(httpServer, "/api/holds");
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(result.body.mode, "live");
+      assert.strictEqual(result.body.holds.length, 3);
+      assert.strictEqual(JSON.stringify(result.body).indexOf(password), -1);
+      return getJson(httpServer, "/api/holds?includeReleased=false");
+    })
+    .then(function (result) {
+      assert.ok(result.body.holds.every(function (hold) {
+        return hold.released === false;
+      }));
+    })
+    .finally(function () {
+      if (httpServer) {
+        httpServer.close();
+      }
+    });
+});
+
+if (pending === 0) {
+  finish();
+}
