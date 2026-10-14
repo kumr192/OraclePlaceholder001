@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Invoice Hold Triage — Example data</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="masthead-inner">
+        <div>
+          <p class="eyebrow">Payables desk · example</p>
+          <h1>Invoice hold triage</h1>
+          <p class="lede">
+            Review sample invoices sitting on Oracle Fusion Payables holds, then follow the suggested next step for each hold type.
+          </p>
+        </div>
+        <p class="example-badge" role="status">Example data</p>
+      </div>
+    </header>
+
+    <main>
+      <p class="notice">
+        <strong>EXAMPLE DATA.</strong>
+        These invoices, suppliers, amounts, and holds are fictional. This page is not connected to Oracle Fusion, Oracle Cloud, or any live ledger.
+      </p>
+
+      <section class="cards" aria-label="Hold summary">
+        <article class="card">
+          <h2>Invoices on hold</h2>
+          <p id="stat-count" class="stat">0</p>
+          <p class="stat-note">In the current filter</p>
+        </article>
+        <article class="card">
+          <h2>Amount on hold</h2>
+          <div id="stat-amount" class="stat-amount"></div>
+          <p class="stat-note">By currency, not converted</p>
+        </article>
+        <article class="card">
+          <h2>Oldest hold</h2>
+          <p id="stat-oldest" class="stat">—</p>
+          <p id="stat-oldest-detail" class="stat-note">Age in days</p>
+        </article>
+      </section>
+      <p class="as-of">Hold age is calculated as of <span id="as-of"></span>.</p>
+
+      <section class="panel" aria-label="Invoice holds">
+        <div class="toolbar">
+          <div class="field grow">
+            <label for="filter-search">Search</label>
+            <input
+              id="filter-search"
+              type="search"
+              placeholder="Supplier, invoice, hold, currency…"
+              autocomplete="off"
+            />
+          </div>
+          <div class="field">
+            <label for="filter-hold">Hold type</label>
+            <select id="filter-hold">
+              <option value="all">All hold types</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="filter-bu">Business unit</label>
+            <select id="filter-bu">
+              <option value="all">All business units</option>
+            </select>
+          </div>
+          <button id="clear-filters" type="button" class="ghost">Clear</button>
+        </div>
+        <p id="result-meta" class="meta" aria-live="polite"></p>
+
+        <div class="table-scroll">
+          <table>
+            <caption class="sr-only">
+              Example invoices currently on hold, oldest first
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Supplier</th>
+                <th scope="col">Invoice number</th>
+                <th scope="col" class="num">Amount</th>
+                <th scope="col">Currency</th>
+                <th scope="col">Hold name</th>
+                <th scope="col">Hold date</th>
+                <th scope="col" class="num">Age (days)</th>
+                <th scope="col">Business unit</th>
+                <th scope="col">Suggested action</th>
+              </tr>
+            </thead>
+            <tbody id="invoice-body"></tbody>
+          </table>
+        </div>
+        <p id="empty-state" class="empty" hidden>
+          No example invoices match these filters. Clear the search or choose another hold type or business unit.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      Demonstration only. Suggested actions are simple rules for this sample, not Oracle policy or an approval workflow.
+    </footer>
+
+    <script src="triage.js"></script>
+    <script src="data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
