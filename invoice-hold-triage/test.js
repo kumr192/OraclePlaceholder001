@@ -183,6 +183,50 @@ test("settings are missing until url, user, and password are all set", function 
   assert.strictEqual(parsed.ORACLE_FUSION_PASSWORD, "keep me");
 });
 
+test("a parent invoice link supplies the amount when the supplier name differs", function () {
+  var raw = {
+    InvoiceNumber: "100",
+    BusinessUnit: "Vision Operations",
+    Supplier: "Hold Supplier",
+    ReleaseName: null,
+    ReleaseDate: null,
+    links: [
+      {
+        rel: "parent",
+        href: "https://fa-example.example.com/fscmRestApi/resources/11.13.18.05/invoices/555",
+      },
+    ],
+  };
+  assert.strictEqual(oracle.invoiceIdFromHold(raw), "555");
+  var found = oracle.lookupInvoice(
+    oracle.indexInvoices([
+      {
+        InvoiceId: 555,
+        InvoiceNumber: "100",
+        BusinessUnit: "Other BU",
+        Supplier: "Invoice Supplier",
+        InvoiceAmount: 42,
+        InvoiceCurrency: "USD",
+      },
+    ]),
+    raw
+  );
+  assert.strictEqual(found.amount, 42);
+  var onlyNumber = oracle.lookupInvoice(
+    oracle.indexInvoices([
+      {
+        InvoiceNumber: "100",
+        BusinessUnit: "Z",
+        Supplier: "Y",
+        InvoiceAmount: 7,
+        InvoiceCurrency: "CAD",
+      },
+    ]),
+    { InvoiceNumber: "100", BusinessUnit: "A", Supplier: "B" }
+  );
+  assert.strictEqual(onlyNumber.amount, 7);
+});
+
 test("an Oracle hold maps onto the triage row and joins the invoice amount", function () {
   var raw = {
     HoldId: 300100187353833,
@@ -317,6 +361,14 @@ testAsync("paging stops when Oracle repeats the same offset", function () {
     });
 });
 
+function parentLink(id) {
+  return {
+    rel: "parent",
+    name: "invoices",
+    href: "https://fa-example.example.com/fscmRestApi/resources/11.13.18.05/invoices/" + id,
+  };
+}
+
 function mockFusion(password) {
   return function (url, options) {
     var parsed = new URL(url);
@@ -325,77 +377,62 @@ function mockFusion(password) {
     assert.strictEqual(header, "Basic " + Buffer.from("fin_impl:" + password).toString("base64"));
     if (parsed.pathname.indexOf("invoiceHolds") !== -1) {
       var q = parsed.searchParams.get("q");
+      assert.notStrictEqual(q, "ReleaseDate IS NULL");
+      assert.strictEqual(q, "ReleaseName IS NULL");
       var offset = Number(parsed.searchParams.get("offset"));
-      if (q === "ReleaseDate IS NULL" && offset === 0) {
-        return Promise.resolve({
-          ok: false,
-          status: 400,
-          text: function () {
-            return Promise.resolve("bad query");
-          },
-          json: function () {
-            return Promise.resolve({});
-          },
-        });
-      }
-      assert.strictEqual(parsed.searchParams.get("onlyData"), "true");
       if (offset === 0) {
         return jsonResult(200, {
-          items: [openHold("A-1"), openHold("A-2")],
+          items: [openHold("A-1", 101), openHold("A-2", 102)],
           hasMore: true,
           limit: 500,
           offset: 0,
         });
       }
       return jsonResult(200, {
-        items: [releasedHold("B-9"), openHold("C-3")],
+        items: [releasedHold("B-9"), openHold("C-3", 103)],
         hasMore: false,
         limit: 500,
-        offset: 500,
+        offset: offset,
       });
     }
-    if (parsed.pathname.indexOf("/invoices") !== -1) {
+    var idMatch = parsed.pathname.match(/\/invoices\/(\d+)$/);
+    if (idMatch) {
+      var amounts = { 101: [80, "USD", "A-1"], 102: [15, "USD", "A-2"], 103: [20, "EUR", "C-3"] };
+      var amount = amounts[idMatch[1]];
       return jsonResult(200, {
-        items: [
-          {
-            InvoiceNumber: "A-1",
-            BusinessUnit: "Vision Operations",
-            Supplier: "Advanced Network Devices",
-            InvoiceAmount: 80,
-            InvoiceCurrency: "USD",
-          },
-          {
-            InvoiceNumber: "C-3",
-            BusinessUnit: "Vision Operations",
-            Supplier: "Other Supplier",
-            InvoiceAmount: 20,
-            InvoiceCurrency: "EUR",
-          },
-        ],
-        hasMore: false,
-        limit: 500,
-        offset: 0,
+        InvoiceId: Number(idMatch[1]),
+        InvoiceNumber: amount[2],
+        BusinessUnit: "Some Other Unit",
+        Supplier: "Different Supplier",
+        InvoiceAmount: amount[0],
+        InvoiceCurrency: amount[1],
       });
     }
     throw new Error("unexpected url " + url);
   };
 }
 
-function openHold(number) {
+function openHold(number, id) {
   return {
     HoldId: number,
     InvoiceNumber: number,
     BusinessUnit: "Vision Operations",
-    Supplier: number === "C-3" ? "Other Supplier" : "Advanced Network Devices",
+    Supplier: "Name That Will Not Match",
     HoldDate: "2026-08-01T00:00:00+00:00",
     HoldName: number === "C-3" ? "Qty Rec" : "Price",
     HoldReason: null,
+    ReleaseName: null,
     ReleaseDate: null,
+    links: [parentLink(id)],
   };
 }
 
 function releasedHold(number) {
-  return Object.assign(openHold(number), { ReleaseDate: "2026-09-01T00:00:00+00:00", HoldName: "Funds" });
+  return Object.assign(openHold(number, 999), {
+    ReleaseName: "Amount",
+    ReleaseDate: "2026-09-01T00:00:00+00:00",
+    HoldName: "Funds",
+  });
 }
 
 function jsonResult(status, body) {
@@ -431,8 +468,10 @@ testAsync("live load pages holds, drops released rows, and does not leak the pas
       );
       assert.strictEqual(result.holds[0].amount, 80);
       assert.strictEqual(result.holds[0].currency, "USD");
+      assert.strictEqual(result.holds[1].amount, 15);
       assert.strictEqual(result.holds[2].amount, 20);
       assert.strictEqual(result.holds[2].currency, "EUR");
+      assert.strictEqual(result.holds[0].supplier, "Name That Will Not Match");
       assert.strictEqual(JSON.stringify(result).indexOf(password), -1);
       assert.strictEqual(oracle.siteRoot("https://fa-example.example.com/fscmRestApi"), "https://fa-example.example.com");
     });
@@ -575,6 +614,123 @@ testAsync("the API returns live rows from a mocked Oracle and omits the password
       if (httpServer) {
         httpServer.close();
       }
+    });
+});
+
+testAsync("an empty open-hold query warns and does not page every released hold", function () {
+  var urls = [];
+  return oracle
+    .loadHolds({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "pw",
+      includeReleased: false,
+      fetch: function (url) {
+        urls.push(String(url));
+        var parsed = new URL(url);
+        var q = parsed.searchParams.get("q");
+        if (parsed.pathname.indexOf("invoiceHolds") === -1) {
+          throw new Error("invoices should not be loaded when there are no holds");
+        }
+        if (q === "ReleaseName IS NULL" || q === "ReleaseName IS NULL;ReleaseDate IS NULL") {
+          return jsonResult(200, { items: [], count: 0, hasMore: false, limit: 500, offset: 0 });
+        }
+        assert.strictEqual(q, null);
+        assert.strictEqual(parsed.searchParams.get("limit"), "1");
+        return jsonResult(200, {
+          items: [
+            {
+              HoldId: 9,
+              InvoiceNumber: "OLD",
+              ReleaseName: "Amount",
+              ReleaseDate: "2020-01-01T00:00:00+00:00",
+            },
+          ],
+          hasMore: true,
+          limit: 1,
+          offset: 0,
+        });
+      },
+    })
+    .then(function (result) {
+      assert.strictEqual(result.holds.length, 0);
+      assert.ok(result.warning.indexOf("Include released holds") !== -1);
+      assert.strictEqual(
+        urls.some(function (url) {
+          return new URL(url).searchParams.get("q") === "ReleaseDate IS NULL";
+        }),
+        false
+      );
+      assert.ok(urls.length <= 3);
+    });
+});
+
+testAsync("include released keeps only the recent cap and still matches amounts by invoice id", function () {
+  var holdCalls = 0;
+  return oracle
+    .loadHolds({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "pw",
+      includeReleased: true,
+      releasedCap: 2,
+      fetch: function (url) {
+        var parsed = new URL(url);
+        if (parsed.pathname.indexOf("invoiceHolds") !== -1) {
+          holdCalls += 1;
+          assert.strictEqual(parsed.searchParams.get("orderBy"), "HoldDate:desc");
+          assert.strictEqual(parsed.searchParams.get("limit"), "2");
+          assert.strictEqual(parsed.searchParams.get("offset"), "0");
+          return jsonResult(200, {
+            items: [
+              {
+                HoldId: "r1",
+                InvoiceNumber: "R1",
+                Supplier: "Hold Supplier",
+                BusinessUnit: "Vision Operations",
+                ReleaseName: "Amount",
+                ReleaseDate: "2026-02-01T00:00:00+00:00",
+                HoldDate: "2026-02-01T00:00:00+00:00",
+                HoldName: "Amount",
+                links: [parentLink(41)],
+              },
+              {
+                HoldId: "r2",
+                InvoiceNumber: "R2",
+                Supplier: "Hold Supplier",
+                BusinessUnit: "Vision Operations",
+                ReleaseName: "Price",
+                ReleaseDate: "2026-01-01T00:00:00+00:00",
+                HoldDate: "2026-01-01T00:00:00+00:00",
+                HoldName: "Price",
+                links: [parentLink(42)],
+              },
+            ],
+            hasMore: true,
+            limit: 2,
+            offset: 0,
+          });
+        }
+        var idMatch = parsed.pathname.match(/\/invoices\/(\d+)$/);
+        assert.ok(idMatch);
+        return jsonResult(200, {
+          InvoiceId: Number(idMatch[1]),
+          InvoiceNumber: "R" + idMatch[1],
+          BusinessUnit: "Elsewhere",
+          Supplier: "Someone Else",
+          InvoiceAmount: 10,
+          InvoiceCurrency: "USD",
+        });
+      },
+    })
+    .then(function (result) {
+      assert.strictEqual(holdCalls, 1);
+      assert.strictEqual(result.holds.length, 2);
+      assert.strictEqual(result.truncated, true);
+      assert.ok(result.warning.indexOf("2 most recent") !== -1);
+      assert.ok(result.holds.every(function (hold) {
+        return hold.amount === 10 && hold.currency === "USD";
+      }));
     });
 });
 

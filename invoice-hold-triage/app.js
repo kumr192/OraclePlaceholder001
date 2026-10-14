@@ -114,7 +114,7 @@
       }
     }
     if (body.warning) {
-      noticeEl.textContent += " " + body.warning;
+      noticeEl.textContent += " Warning: " + body.warning;
     }
     refreshedEl.textContent = body.refreshedAt ? "Last refreshed " + formatTimestamp(body.refreshedAt) : "";
   }
@@ -158,6 +158,10 @@
       bodyEl.appendChild(renderRow(invoice));
     });
     emptyEl.hidden = filtered.length !== 0;
+    emptyEl.textContent =
+      holds.length === 0
+        ? "No holds were returned."
+        : "No holds match these filters. Clear the search or choose another hold type or business unit.";
   }
 
   function renderAmounts(totals) {

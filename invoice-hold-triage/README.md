@@ -28,7 +28,9 @@ You need Node.js 18 or newer. There is nothing to install.
 
 The password stays in `.env` on the computer that runs `node server.js`. The page in the browser never sees it. Do not commit `.env`. Git already ignores that file.
 
-The page starts with open holds only (holds that have no release date). Check **Include released holds** to show released holds too. **Refresh** loads them again.
+The page starts with open holds only. Open holds are holds with no release name. Check **Include released holds** to also show released holds. That view loads the 500 most recent holds so it stays fast. **Refresh** loads them again.
+
+If live mode returns no rows, the page says so. A filter that does not match this Oracle instance is not treated as a successful empty list.
 
 If the three settings are missing, the page shows sample invoices and labels them as sample data. That is not your Oracle data.
 
