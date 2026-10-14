@@ -31,6 +31,8 @@ The Oracle password stays in `.env`. The page in the browser never sees it. Do n
 
 The page starts with open holds only. Open holds are holds with no release name. Check **Include released holds** to add released holds as well. Every open hold stays in the list. Only released holds are capped, at the 500 most recent. **Refresh** loads them again.
 
+The **Business unit** list loads after you pass the access password. Choose one business unit to load only that unit from Oracle, which is faster than loading every unit. **All business units** loads holds without that filter. In sample mode the list comes from the sample invoices.
+
 If the Oracle settings are missing, the page shows sample invoices and labels them as sample data. That is not your Oracle data.
 
 A bad Oracle password or a network problem is shown on the page. The page does not switch to sample data when Oracle rejects the sign-in.
@@ -67,4 +69,4 @@ From this folder:
 node test.js
 ```
 
-The checks use fake Oracle responses. They do not sign in to Oracle. They check paging, hold mapping, amount matching, summary totals, the access password, and the suggested actions.
+The checks use fake Oracle responses. They do not sign in to Oracle. They check paging, hold mapping, amount matching, the business unit list, summary totals, the access password, and the suggested actions.

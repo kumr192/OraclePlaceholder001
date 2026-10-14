@@ -11,6 +11,7 @@ var envFile = require("./env.js");
 var server = require("./server.js");
 var access = require("./access.js");
 var holdsApi = require("./api/holds.js");
+var businessUnitsApi = require("./api/business-units.js");
 
 var AS_OF = "2026-10-13";
 var failed = 0;
@@ -866,6 +867,207 @@ testAsync("the Vercel holds function uses the same gate and does not leak Oracle
       var body = JSON.parse(ok.body);
       assert.strictEqual(ok.statusCode, 200);
       assert.strictEqual(body.mode, "sample");
+      assert.strictEqual(JSON.stringify(body).indexOf("gate-secret"), -1);
+    })
+    .finally(function () {
+      if (previous === undefined) {
+        delete process.env.APP_ACCESS_PASSWORD;
+      } else {
+        process.env.APP_ACCESS_PASSWORD = previous;
+      }
+    });
+});
+
+test("a business unit is added to the Oracle hold query", function () {
+  assert.strictEqual(oracle.holdQueryFor("ReleaseName IS NULL", ""), "ReleaseName IS NULL");
+  assert.strictEqual(oracle.holdQueryFor("ReleaseName IS NULL", "all"), "ReleaseName IS NULL");
+  assert.strictEqual(
+    oracle.holdQueryFor("ReleaseName IS NULL", "Vision Operations"),
+    "ReleaseName IS NULL;BusinessUnit='Vision Operations'"
+  );
+  assert.strictEqual(
+    oracle.holdQueryFor("ReleaseName IS NOT NULL", "O'Brien"),
+    "ReleaseName IS NOT NULL;BusinessUnit='O''Brien'"
+  );
+});
+
+testAsync("a selected business unit is sent to Oracle and other units are left out", function () {
+  var queries = [];
+  return oracle
+    .loadHolds({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "pw",
+      includeReleased: true,
+      businessUnit: "Vision Operations",
+      releasedCap: 5,
+      fetch: function (url) {
+        var parsed = new URL(url);
+        if (parsed.pathname.indexOf("invoiceHolds") !== -1) {
+          var q = parsed.searchParams.get("q");
+          queries.push(q);
+          if (q.indexOf("ReleaseName IS NULL") === 0) {
+            return jsonResult(200, {
+              items: [
+                openHold("KEEP", 21),
+                Object.assign(openHold("DROP", 22), { BusinessUnit: "Other Unit" }),
+              ],
+              hasMore: false,
+              limit: 500,
+              offset: 0,
+            });
+          }
+          assert.strictEqual(q, "ReleaseName IS NOT NULL;BusinessUnit='Vision Operations'");
+          return jsonResult(200, { items: [], hasMore: false, limit: 5, offset: 0 });
+        }
+        var idMatch = parsed.pathname.match(/\/invoices\/(\d+)$/);
+        assert.ok(idMatch);
+        return jsonResult(200, {
+          InvoiceId: Number(idMatch[1]),
+          InvoiceNumber: "KEEP",
+          BusinessUnit: "Vision Operations",
+          Supplier: "Kept Supplier",
+          InvoiceAmount: 10,
+          InvoiceCurrency: "USD",
+        });
+      },
+    })
+    .then(function (result) {
+      assert.deepStrictEqual(queries, [
+        "ReleaseName IS NULL;BusinessUnit='Vision Operations'",
+        "ReleaseName IS NOT NULL;BusinessUnit='Vision Operations'",
+      ]);
+      assert.deepStrictEqual(
+        result.holds.map(function (hold) {
+          return hold.invoiceNumber;
+        }),
+        ["KEEP"]
+      );
+    });
+});
+
+testAsync("business units come from the Oracle list and skip inactive units", function () {
+  return oracle
+    .listBusinessUnits({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "pw",
+      fetch: function (url) {
+        var parsed = new URL(url);
+        assert.ok(parsed.pathname.indexOf("finBusinessUnitsLOV") !== -1);
+        assert.strictEqual(parsed.pathname.indexOf("invoiceHolds"), -1);
+        return jsonResult(200, {
+          items: [
+            { BusinessUnitName: "Vision Operations", ActiveFlag: true },
+            { BusinessUnitName: "Closed Unit", ActiveFlag: false },
+            { BusinessUnitName: "Canada Business Unit", ActiveFlag: "Y" },
+            { BusinessUnitName: "Vision Operations", ActiveFlag: true },
+          ],
+          hasMore: false,
+        });
+      },
+    })
+    .then(function (result) {
+      assert.strictEqual(result.source, "lov");
+      assert.deepStrictEqual(result.businessUnits, ["Canada Business Unit", "Vision Operations"]);
+    });
+});
+
+testAsync("a missing business unit list falls back to distinct open holds", function () {
+  var sawHolds = false;
+  return oracle
+    .listBusinessUnits({
+      baseUrl: "https://fa-example.example.com",
+      user: "fin_impl",
+      password: "pw",
+      fetch: function (url) {
+        var parsed = new URL(url);
+        if (parsed.pathname.indexOf("finBusinessUnitsLOV") !== -1) {
+          return jsonResult(404, { title: "Not Found" });
+        }
+        sawHolds = true;
+        assert.strictEqual(parsed.searchParams.get("q"), "ReleaseName IS NULL");
+        assert.strictEqual(parsed.searchParams.get("fields"), "BusinessUnit");
+        return jsonResult(200, {
+          items: [
+            { BusinessUnit: "US1 Business Unit" },
+            { BusinessUnit: "US1 Business Unit" },
+            { BusinessUnit: "UK Business Unit" },
+          ],
+          hasMore: false,
+        });
+      },
+    })
+    .then(function (result) {
+      assert.strictEqual(sawHolds, true);
+      assert.strictEqual(result.source, "holds");
+      assert.deepStrictEqual(result.businessUnits, ["UK Business Unit", "US1 Business Unit"]);
+    });
+});
+
+testAsync("sample mode lists business units and filters holds for the selected unit", function () {
+  var app = server.createApp({ env: {}, fetch: function () {
+    throw new Error("Oracle must not be called");
+  } });
+  var httpServer;
+  return listen(app)
+    .then(function (started) {
+      httpServer = started;
+      return getJson(httpServer, "/api/business-units");
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(result.body.mode, "sample");
+      assert.deepStrictEqual(result.body.businessUnits, [
+        "Canada Business Unit",
+        "UK Business Unit",
+        "US1 Business Unit",
+        "Vision Operations",
+      ]);
+      return getJson(httpServer, "/api/holds?businessUnit=" + encodeURIComponent("Canada Business Unit"));
+    })
+    .then(function (result) {
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(result.body.businessUnit, "Canada Business Unit");
+      assert.ok(result.body.holds.length > 0);
+      assert.ok(result.body.holds.every(function (hold) {
+        return hold.businessUnit === "Canada Business Unit";
+      }));
+    })
+    .finally(function () {
+      if (httpServer) {
+        httpServer.close();
+      }
+    });
+});
+
+testAsync("the business unit endpoint uses the same access gate", function () {
+  var previous = process.env.APP_ACCESS_PASSWORD;
+  process.env.APP_ACCESS_PASSWORD = "gate-secret";
+  var denied = mockResponse();
+  return Promise.resolve(
+    businessUnitsApi({ method: "GET", url: "/api/business-units", headers: {} }, denied)
+  )
+    .then(function () {
+      assert.strictEqual(denied.statusCode, 401);
+      assert.strictEqual(denied.body.indexOf("gate-secret"), -1);
+      var ok = mockResponse();
+      return businessUnitsApi(
+        {
+          method: "GET",
+          url: "/api/business-units",
+          headers: { authorization: basicHeader("x", "gate-secret") },
+        },
+        ok
+      ).then(function () {
+        return ok;
+      });
+    })
+    .then(function (ok) {
+      var body = JSON.parse(ok.body);
+      assert.strictEqual(ok.statusCode, 200);
+      assert.strictEqual(body.mode, "sample");
+      assert.ok(body.businessUnits.indexOf("Vision Operations") !== -1);
       assert.strictEqual(JSON.stringify(body).indexOf("gate-secret"), -1);
     })
     .finally(function () {

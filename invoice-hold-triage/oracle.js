@@ -18,6 +18,7 @@ var INVOICE_CONCURRENCY = 6;
 var OPEN_HOLD_QUERY = "ReleaseName IS NULL";
 var OPEN_HOLD_QUERY_FALLBACK = "ReleaseName IS NULL;ReleaseDate IS NULL";
 var RELEASED_HOLD_QUERY = "ReleaseName IS NOT NULL";
+var BUSINESS_UNIT_LOV = "/fscmRestApi/resources/11.13.18.05/finBusinessUnitsLOV";
 var INVOICE_FIELDS = "InvoiceId,InvoiceNumber,BusinessUnit,Supplier,InvoiceAmount,InvoiceCurrency";
 
 function OracleRequestError(kind, status, message) {
@@ -66,6 +67,26 @@ function dateOnly(value) {
 
 function quoteQueryValue(value) {
   return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
+function normalizeBusinessUnit(value) {
+  var text = String(value || "").trim();
+  if (!text || text.toLowerCase() === "all") {
+    return "";
+  }
+  return text;
+}
+
+function holdQueryFor(baseQuery, businessUnit) {
+  var unit = normalizeBusinessUnit(businessUnit);
+  if (!unit) {
+    return baseQuery || null;
+  }
+  var clause = "BusinessUnit=" + quoteQueryValue(unit);
+  if (!baseQuery) {
+    return clause;
+  }
+  return baseQuery + ";" + clause;
 }
 
 function joinWarning(left, right) {
@@ -256,13 +277,21 @@ async function explainEmptyOpenHolds(config, origin) {
   var probe = await oracleGet(
     origin,
     HOLD_COLLECTION,
-    { onlyData: "true", limit: 1, offset: 0 },
+    {
+      onlyData: "true",
+      limit: 1,
+      offset: 0,
+      q: holdQueryFor(null, config.businessUnit),
+    },
     config.user,
     config.password,
     config.fetch
   );
   var sample = probe && Array.isArray(probe.items) ? probe.items[0] : null;
   if (!sample) {
+    if (normalizeBusinessUnit(config.businessUnit)) {
+      return "Oracle returned no invoice holds for " + normalizeBusinessUnit(config.businessUnit) + ".";
+    }
     return "Oracle returned no invoice holds.";
   }
   if (!isReleased(sample)) {
@@ -273,13 +302,19 @@ async function explainEmptyOpenHolds(config, origin) {
 
 async function fetchOpenHolds(config, origin) {
   var cap = config.openCap || OPEN_HOLD_CAP;
-  var primary = await fetchHoldQuery(config, origin, OPEN_HOLD_QUERY, null, cap);
+  var primary = await fetchHoldQuery(config, origin, holdQueryFor(OPEN_HOLD_QUERY, config.businessUnit), null, cap);
   if (primary.items.length > 0) {
     return primary;
   }
   var alternate;
   try {
-    alternate = await fetchHoldQuery(config, origin, OPEN_HOLD_QUERY_FALLBACK, null, cap);
+    alternate = await fetchHoldQuery(
+      config,
+      origin,
+      holdQueryFor(OPEN_HOLD_QUERY_FALLBACK, config.businessUnit),
+      null,
+      cap
+    );
   } catch (err) {
     if (!(err && err.status === 400)) {
       throw err;
@@ -295,7 +330,160 @@ async function fetchOpenHolds(config, origin) {
 
 async function fetchReleasedHolds(config, origin) {
   var cap = config.releasedCap || RELEASED_HOLD_CAP;
-  return fetchHoldQuery(config, origin, RELEASED_HOLD_QUERY, "HoldDate:desc", cap);
+  return fetchHoldQuery(config, origin, holdQueryFor(RELEASED_HOLD_QUERY, config.businessUnit), "HoldDate:desc", cap);
+}
+
+function isActiveBusinessUnit(row) {
+  if (!row || row.ActiveFlag == null || row.ActiveFlag === "") {
+    return true;
+  }
+  var flag = row.ActiveFlag;
+  if (flag === false || flag === "false" || flag === "FALSE" || flag === "N" || flag === "n") {
+    return false;
+  }
+  return true;
+}
+
+function businessUnitNames(rows, nameField) {
+  var seen = {};
+  var names = [];
+  (rows || []).forEach(function (row) {
+    if (nameField === "BusinessUnitName" && !isActiveBusinessUnit(row)) {
+      return;
+    }
+    var name = String((row && row[nameField]) || "").trim();
+    if (!name || seen[name]) {
+      return;
+    }
+    seen[name] = true;
+    names.push(name);
+  });
+  names.sort(function (a, b) {
+    return a.localeCompare(b);
+  });
+  return names;
+}
+
+async function fetchBusinessUnitLov(config, origin) {
+  var attempts = [
+    { onlyData: "true", fields: "BusinessUnitName,ActiveFlag", orderBy: "BusinessUnitName:asc" },
+    { onlyData: "true", fields: "BusinessUnitName,ActiveFlag" },
+    { onlyData: "true" },
+  ];
+  var lastError = null;
+  for (var i = 0; i < attempts.length; i += 1) {
+    try {
+      return await collectPages(function (offset) {
+        return oracleGet(
+          origin,
+          BUSINESS_UNIT_LOV,
+          Object.assign({ limit: PAGE_LIMIT, offset: offset }, attempts[i]),
+          config.user,
+          config.password,
+          config.fetch
+        );
+      });
+    } catch (err) {
+      lastError = err;
+      if (err && (err.kind === "login" || err.kind === "network" || err.status === 401 || err.status === 403)) {
+        throw err;
+      }
+      if (err && err.status === 404) {
+        throw err;
+      }
+      if (!(err && err.status === 400)) {
+        throw err;
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function distinctBusinessUnitsFromHolds(config, origin) {
+  try {
+    return await scanHoldBusinessUnits(config, origin, true);
+  } catch (err) {
+    if (err && err.status === 400) {
+      return scanHoldBusinessUnits(config, origin, false);
+    }
+    throw err;
+  }
+}
+
+async function scanHoldBusinessUnits(config, origin, withFields) {
+  var items = [];
+  var offset = 0;
+  var pages = 0;
+  while (pages < 4) {
+    pages += 1;
+    var query = {
+      onlyData: "true",
+      limit: PAGE_LIMIT,
+      offset: offset,
+      q: OPEN_HOLD_QUERY,
+    };
+    if (withFields) {
+      query.fields = "BusinessUnit";
+    }
+    var page = await oracleGet(
+      origin,
+      HOLD_COLLECTION,
+      query,
+      config.user,
+      config.password,
+      config.fetch
+    );
+    var pageItems = page && Array.isArray(page.items) ? page.items : [];
+    items = items.concat(pageItems);
+    if (!page || !page.hasMore) {
+      break;
+    }
+    var limit = Number(page.limit);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      limit = pageItems.length || PAGE_LIMIT;
+    }
+    var pageOffset = Number(page.offset);
+    if (!Number.isFinite(pageOffset)) {
+      pageOffset = offset;
+    }
+    var nextOffset = pageOffset + limit;
+    if (nextOffset <= offset) {
+      break;
+    }
+    offset = nextOffset;
+  }
+  return businessUnitNames(items, "BusinessUnit");
+}
+
+async function listBusinessUnits(config) {
+  var origin = siteRoot(config.baseUrl);
+  try {
+    var rows = await fetchBusinessUnitLov(config, origin);
+    var names = businessUnitNames(rows, "BusinessUnitName");
+    if (names.length > 0) {
+      return { businessUnits: names, source: "lov", warning: null };
+    }
+  } catch (err) {
+    if (err && (err.kind === "login" || err.kind === "network")) {
+      throw err;
+    }
+  }
+  var fromHolds = await distinctBusinessUnitsFromHolds(config, origin);
+  return {
+    businessUnits: fromHolds,
+    source: "holds",
+    warning: fromHolds.length
+      ? "Business units were taken from invoice holds. The business unit list was not available."
+      : "Oracle returned no business units.",
+  };
+}
+
+function sameBusinessUnit(raw, businessUnit) {
+  var unit = normalizeBusinessUnit(businessUnit);
+  if (!unit) {
+    return true;
+  }
+  return String((raw && raw.BusinessUnit) || "").trim().toLowerCase() === unit.toLowerCase();
 }
 
 function dedupeHolds(items) {
@@ -586,7 +774,12 @@ async function loadHolds(config) {
   if (config.includeReleased) {
     released = await fetchReleasedHolds(config, origin);
   }
-  var openItems = selectOpenHolds(open.items, false);
+  var openItems = selectOpenHolds(open.items, false).filter(function (item) {
+    return sameBusinessUnit(item, config.businessUnit);
+  });
+  released.items = (released.items || []).filter(function (item) {
+    return sameBusinessUnit(item, config.businessUnit);
+  });
   if (config.includeReleased && openItems.length === 0 && released.items.length > 0) {
     open.warning = null;
   }
@@ -599,7 +792,10 @@ async function loadHolds(config) {
     warning = joinWarning(warning, releasedCapWarning(released.items.length));
   }
   if (selected.length === 0 && !warning) {
-    warning = "Oracle returned no invoice holds.";
+    var unit = normalizeBusinessUnit(config.businessUnit);
+    warning = unit
+      ? "Oracle returned no invoice holds for " + unit + "."
+      : "Oracle returned no invoice holds.";
   }
   var invoiceResult = { rows: [], failures: 0 };
   if (selected.length > 0) {
@@ -638,6 +834,10 @@ module.exports = {
   INVOICE_COLLECTION: INVOICE_COLLECTION,
   OPEN_HOLD_QUERY: OPEN_HOLD_QUERY,
   RELEASED_HOLD_QUERY: RELEASED_HOLD_QUERY,
+  BUSINESS_UNIT_LOV: BUSINESS_UNIT_LOV,
+  normalizeBusinessUnit: normalizeBusinessUnit,
+  holdQueryFor: holdQueryFor,
+  listBusinessUnits: listBusinessUnits,
   dedupeHolds: dedupeHolds,
   OPEN_HOLD_CAP: OPEN_HOLD_CAP,
   RELEASED_HOLD_CAP: RELEASED_HOLD_CAP,

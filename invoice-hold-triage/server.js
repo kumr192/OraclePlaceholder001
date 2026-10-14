@@ -1,6 +1,6 @@
 /**
- * Local server for the triage page and /api/holds.
- * On Vercel, public/ is static and api/holds.js is the same API.
+ * Local server for the triage page, /api/holds, and /api/business-units.
+ * On Vercel, public/ is static and the api/ folder is the same API.
  * Oracle credentials stay in environment variables and are not sent to the browser.
  */
 var http = require("http");
@@ -63,6 +63,10 @@ function createApp(options) {
     }
     if (url.pathname === "/api/holds" && req.method === "GET") {
       holds.handleHolds(url, env, fetchImpl, res);
+      return;
+    }
+    if (url.pathname === "/api/business-units" && req.method === "GET") {
+      holds.handleBusinessUnits(env, fetchImpl, res);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
