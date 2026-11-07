@@ -1,13 +1,44 @@
 /**
  * Vercel edge gate for the page and the API.
  * The password check matches access.js: any username, APP_ACCESS_PASSWORD.
- * Oracle credentials are not read here.
+ * Live Oracle settings without that access password fail closed.
+ * The Oracle password is never written to the response.
  */
 
 var REALM = 'Basic realm="Invoice hold triage", charset="UTF-8"';
 
+var CONFIG_REQUIRED = "config-required. Set APP_ACCESS_PASSWORD before loading live holds.";
+
 function isGateEnabled(password) {
   return password != null && String(password) !== "";
+}
+
+function isLiveConfigured(env) {
+  var source = env || {};
+  var url = String(source.ORACLE_FUSION_URL || "").trim();
+  var user = String(source.ORACLE_FUSION_USER || "").trim();
+  var password = source.ORACLE_FUSION_PASSWORD;
+  return Boolean(url && user && password != null && String(password) !== "");
+}
+
+function decide(env, authorizationHeader) {
+  var source = env || {};
+  var expected = source.APP_ACCESS_PASSWORD;
+  if (!isGateEnabled(expected)) {
+    if (isLiveConfigured(source)) {
+      return { status: 503, message: CONFIG_REQUIRED };
+    }
+    return null;
+  }
+  var password = decodeBasic(authorizationHeader);
+  if (password != null && sameSecret(password, expected)) {
+    return null;
+  }
+  return {
+    status: 401,
+    authenticate: REALM,
+    message: "Sign in to view invoice holds.",
+  };
 }
 
 function decodeBasic(header) {
@@ -49,27 +80,37 @@ function sameSecret(given, expected) {
   return mismatch === 0;
 }
 
+function responseFor(decision) {
+  var headers = {
+    "Cache-Control": "no-store",
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+  };
+  if (decision.authenticate) {
+    headers["WWW-Authenticate"] = decision.authenticate;
+  }
+  return new Response(decision.message, {
+    status: decision.status,
+    headers: headers,
+  });
+}
+
+export function decideRequest(env, authorizationHeader) {
+  return decide(env, authorizationHeader);
+}
+
 export default function middleware(request) {
   var path = new URL(request.url).pathname;
   if (path === "/favicon.ico") {
     return;
   }
-  var expected = process.env.APP_ACCESS_PASSWORD;
-  if (!isGateEnabled(expected)) {
+  var decision = decide(process.env, request.headers.get("authorization"));
+  if (!decision) {
     return;
   }
-  var password = decodeBasic(request.headers.get("authorization"));
-  if (password != null && sameSecret(password, expected)) {
-    return;
-  }
-  return new Response("Sign in to view invoice holds.", {
-    status: 401,
-    headers: {
-      "WWW-Authenticate": REALM,
-      "Cache-Control": "no-store",
-      "Content-Type": "text/plain; charset=utf-8",
-    },
-  });
+  return responseFor(decision);
 }
 
 export const config = {

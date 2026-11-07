@@ -15,7 +15,7 @@ cp .env.example .env
 - `ORACLE_FUSION_URL` — `https://ibcrqy-test.fa.ocs.oraclecloud.com`
 - `ORACLE_FUSION_USER` — the Oracle user name
 - `ORACLE_FUSION_PASSWORD` — the Oracle password
-- `APP_ACCESS_PASSWORD` — optional here. If you set it, the page asks for this access password. Any username is fine.
+- `APP_ACCESS_PASSWORD` — required when the Oracle settings are set. Any username is fine. Leave it empty only for the labeled sample demo.
 
 3. Start the page:
 
@@ -29,11 +29,13 @@ You need Node.js 18 or newer. There is nothing to install.
 
 Keep the Oracle password in `.env`. The browser never receives it. Do not commit `.env`.
 
-The page loads open holds first. An open hold has no release name. Check **Include released holds** to add released holds. Open holds stop at 1,000. Released holds stop at the 500 most recent. The page shows a warning when Oracle has more rows than that cap. **Refresh** loads the list again.
+The page loads open holds first. An open hold has no release name. A release date without a release name stays on the open list. Check **Include released holds** to add holds whose release name is set. Open holds stop at 1,000. Released holds stop at the 500 most recent. A cap warning says how many holds were fetched and how many are shown. **Refresh** loads the list again.
 
 Choose a **Business unit** to ask Oracle for that unit only. **All business units** does not add that filter. The list comes from Oracle after the access password succeeds. In sample mode the list comes from the sample invoices.
 
 If the Oracle settings are missing, the page shows sample invoices and labels them **Sample data**. That is not live Fusion data.
+
+If the Oracle settings are set and `APP_ACCESS_PASSWORD` is empty, the page and the API return HTTP 503 `config-required`. They do not call Oracle.
 
 A bad Oracle password or a network problem stays an error. The page does not switch those errors to sample data.
 
@@ -55,7 +57,7 @@ Set these environment variables on the Vercel project. Do not commit the values.
 | `ORACLE_FUSION_PASSWORD` | Oracle password, set by the coordinator |
 | `APP_ACCESS_PASSWORD` | Site access password, set by the coordinator |
 
-Set `APP_ACCESS_PASSWORD` before sharing the Vercel URL. Without it, anyone who can open the URL can read the holds. The browser asks for any username and that access password.
+Set `APP_ACCESS_PASSWORD` with the Oracle settings. If the Oracle settings are present and this access password is empty, the deployment returns HTTP 503 `config-required` and does not call Oracle. The browser asks for any username and that access password.
 
 The Oracle password stays on the server. It is not in the page, the logs, or Git.
 

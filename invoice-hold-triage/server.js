@@ -47,6 +47,8 @@ function describeStartup(env) {
   var lines = [];
   if (!creds) {
     lines.push("Oracle settings are missing. The page will show sample data.");
+  } else if (!access.isGateEnabled(env && env.APP_ACCESS_PASSWORD)) {
+    lines.push("Oracle settings are set. Live holds stay blocked until APP_ACCESS_PASSWORD is set.");
   } else {
     lines.push("Oracle settings are set. The page will load live holds.");
   }
@@ -66,11 +68,7 @@ function sendFile(res, fileName) {
 }
 
 function deny(res, decision) {
-  res.writeHead(401, withSecurity({
-    "WWW-Authenticate": decision.authenticate,
-    "Content-Type": "text/plain; charset=utf-8",
-  }));
-  res.end(decision.message);
+  access.writeDenied(res, decision);
 }
 
 function createApp(options) {
@@ -85,17 +83,22 @@ function createApp(options) {
       res.end();
       return;
     }
-    var decision = access.authorize(access.headerFromRequest(req), env.APP_ACCESS_PASSWORD);
+    var decision = access.authorize(access.headerFromRequest(req), env.APP_ACCESS_PASSWORD, env);
     if (!decision.ok) {
       deny(res, decision);
       return;
     }
-    if (url.pathname === "/api/holds" && req.method === "GET") {
-      holds.handleHolds(url, env, fetchImpl, res);
-      return;
-    }
-    if (url.pathname === "/api/business-units" && req.method === "GET") {
-      holds.handleBusinessUnits(env, fetchImpl, res);
+    if (url.pathname === "/api/holds" || url.pathname === "/api/business-units") {
+      if (req.method !== "GET") {
+        res.writeHead(405, withSecurity({ Allow: "GET" }));
+        res.end("Method not allowed");
+        return;
+      }
+      if (url.pathname === "/api/holds") {
+        holds.handleHolds(url, env, fetchImpl, res);
+      } else {
+        holds.handleBusinessUnits(env, fetchImpl, res);
+      }
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {

@@ -1,14 +1,21 @@
 /**
- * Optional site gate. If APP_ACCESS_PASSWORD is set, callers must send
- * HTTP Basic auth. Any username is accepted. The password must match.
+ * Site gate. If APP_ACCESS_PASSWORD is set, callers must send HTTP Basic auth.
+ * Any username is accepted. The password must match.
  * This is not the Oracle password, and it is never sent to the browser.
+ * Live Oracle settings without this access password fail closed.
  */
 var crypto = require("crypto");
+var envFile = require("./env.js");
 
 var REALM = 'Basic realm="Invoice hold triage", charset="UTF-8"';
+var CONFIG_REQUIRED = "config-required. Set APP_ACCESS_PASSWORD before loading live holds.";
 
 function isGateEnabled(password) {
   return password != null && String(password) !== "";
+}
+
+function isLiveConfigured(env) {
+  return Boolean(envFile.fusionConfig(env));
 }
 
 function decodeBasic(header) {
@@ -45,19 +52,43 @@ function sameSecret(given, expected) {
   return crypto.timingSafeEqual(actual, wanted);
 }
 
-function authorize(header, expectedPassword) {
+function authorize(header, expectedPassword, env) {
+  if (isLiveConfigured(env) && !isGateEnabled(expectedPassword)) {
+    return {
+      ok: false,
+      status: 503,
+      code: "config-required",
+      message: CONFIG_REQUIRED,
+    };
+  }
   if (!isGateEnabled(expectedPassword)) {
-    return { ok: true };
+    return { ok: true, status: 200 };
   }
   var parsed = decodeBasic(header);
   if (!parsed || !sameSecret(parsed.password, String(expectedPassword))) {
     return {
       ok: false,
+      status: 401,
       authenticate: REALM,
       message: "Sign in to view invoice holds.",
     };
   }
-  return { ok: true };
+  return { ok: true, status: 200 };
+}
+
+function writeDenied(res, decision) {
+  var headers = {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+  };
+  if (decision && decision.authenticate) {
+    headers["WWW-Authenticate"] = decision.authenticate;
+  }
+  res.writeHead(decision && decision.status ? decision.status : 401, headers);
+  res.end(decision && decision.message ? decision.message : "Sign in to view invoice holds.");
 }
 
 function headerFromRequest(req) {
@@ -71,8 +102,11 @@ function headerFromRequest(req) {
 
 module.exports = {
   REALM: REALM,
+  CONFIG_REQUIRED: CONFIG_REQUIRED,
   isGateEnabled: isGateEnabled,
+  isLiveConfigured: isLiveConfigured,
   decodeBasic: decodeBasic,
   authorize: authorize,
+  writeDenied: writeDenied,
   headerFromRequest: headerFromRequest,
 };
