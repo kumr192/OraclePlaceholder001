@@ -24,23 +24,52 @@ var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
 };
+var SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Cache-Control": "no-store",
+};
+
+function withSecurity(headers) {
+  var merged = {};
+  Object.keys(SECURITY_HEADERS).forEach(function (key) {
+    merged[key] = SECURITY_HEADERS[key];
+  });
+  Object.keys(headers || {}).forEach(function (key) {
+    merged[key] = headers[key];
+  });
+  return merged;
+}
+
+function describeStartup(env) {
+  var creds = envFile.fusionConfig(env);
+  var lines = [];
+  if (!creds) {
+    lines.push("Oracle settings are missing. The page will show sample data.");
+  } else {
+    lines.push("Oracle settings are set. The page will load live holds.");
+  }
+  if (access.isGateEnabled(env && env.APP_ACCESS_PASSWORD)) {
+    lines.push("Access password is set. The browser will ask for it.");
+  }
+  return lines;
+}
 
 function sendFile(res, fileName) {
   var filePath = path.join(PUBLIC, fileName);
   var body = fs.readFileSync(filePath);
-  res.writeHead(200, {
+  res.writeHead(200, withSecurity({
     "Content-Type": TYPES[path.extname(fileName)] || "application/octet-stream",
-    "Cache-Control": "no-store",
-  });
+  }));
   res.end(body);
 }
 
 function deny(res, decision) {
-  res.writeHead(401, {
+  res.writeHead(401, withSecurity({
     "WWW-Authenticate": decision.authenticate,
     "Content-Type": "text/plain; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
+  }));
   res.end(decision.message);
 }
 
@@ -70,18 +99,18 @@ function createApp(options) {
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
-      res.writeHead(405, { Allow: "GET, HEAD" });
+      res.writeHead(405, withSecurity({ Allow: "GET, HEAD" }));
       res.end("Method not allowed");
       return;
     }
     var fileName = FILES[url.pathname];
     if (!fileName) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.writeHead(404, withSecurity({ "Content-Type": "text/plain; charset=utf-8" }));
       res.end("Not found");
       return;
     }
     if (req.method === "HEAD") {
-      res.writeHead(200, { "Content-Type": TYPES[path.extname(fileName)] });
+      res.writeHead(200, withSecurity({ "Content-Type": TYPES[path.extname(fileName)] }));
       res.end();
       return;
     }
@@ -93,18 +122,12 @@ function start() {
   envFile.loadEnvFile(path.join(ROOT, ".env"), process.env);
   var port = Number(process.env.PORT) || 3000;
   var host = process.env.HOST || "127.0.0.1";
-  var creds = envFile.fusionConfig(process.env);
   var app = createApp({ env: process.env });
   var server = http.createServer(app);
   server.listen(port, host, function () {
-    if (!creds) {
-      console.log("Oracle settings are missing. The page will show sample data.");
-    } else {
-      console.log("Oracle settings found for user " + creds.user + ". The page will load live holds.");
-    }
-    if (access.isGateEnabled(process.env.APP_ACCESS_PASSWORD)) {
-      console.log("Access password is set. The browser will ask for it.");
-    }
+    describeStartup(process.env).forEach(function (line) {
+      console.log(line);
+    });
     console.log("Open http://" + host + ":" + port);
   });
   return server;
@@ -116,5 +139,6 @@ if (require.main === module) {
 
 module.exports = {
   createApp: createApp,
+  describeStartup: describeStartup,
   sampleHolds: holds.sampleHolds,
 };

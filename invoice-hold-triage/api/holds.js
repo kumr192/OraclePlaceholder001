@@ -13,6 +13,9 @@ module.exports = function handler(req, res) {
       "WWW-Authenticate": decision.authenticate,
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "X-Frame-Options": "DENY",
     });
     res.end(decision.message);
     return Promise.resolve();
@@ -22,6 +25,5 @@ module.exports = function handler(req, res) {
     res.end("Method not allowed");
     return Promise.resolve();
   }
-  var url = new URL(req.url || "/api/holds", "http://127.0.0.1");
-  return holds.handleHolds(url, process.env, undefined, res);
+  return holds.handleHolds(holds.requestUrl(req, "/api/holds"), process.env, undefined, res);
 };

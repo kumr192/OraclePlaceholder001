@@ -237,7 +237,7 @@
       cell(invoice.invoiceNumber, "mono"),
       cell(invoice.amount == null ? "—" : formatMoney(invoice.amount, invoice.currency), "num"),
       cell(invoice.currency || "—", "mono"),
-      holdCell(invoice.holdName),
+      holdCell(invoice),
       statusCell(invoice),
       cell(invoice.holdDate ? formatShortDate(invoice.holdDate) : "—"),
       cell(invoice.holdDate ? String(triage.ageInDays(invoice.holdDate, asOf)) : "—", "num"),
@@ -256,12 +256,19 @@
     return td;
   }
 
-  function holdCell(holdName) {
+  function holdCell(invoice) {
     var td = document.createElement("td");
     var pill = document.createElement("span");
-    pill.className = "hold-pill hold-" + holdSlug(holdName);
-    pill.textContent = holdName || "Hold";
+    pill.className = "hold-pill hold-" + holdSlug(invoice.holdName);
+    pill.textContent = invoice.holdName || "Hold";
     td.appendChild(pill);
+    var reason = String(invoice.holdReason || "").trim();
+    if (reason) {
+      var note = document.createElement("span");
+      note.className = "hold-reason";
+      note.textContent = reason;
+      td.appendChild(note);
+    }
     return td;
   }
 
@@ -279,7 +286,10 @@
     td.className = "action";
     var advice = triage.suggestedAction(invoice.holdName, invoice.holdReason);
     td.textContent = advice;
-    td.title = invoice.holdDetails ? advice + " " + invoice.holdDetails : advice;
+    var detail = [invoice.holdReason, invoice.holdDetails].filter(function (part) {
+      return String(part || "").trim() !== "";
+    }).join(" ");
+    td.title = detail ? advice + " " + detail : advice;
     return td;
   }
 

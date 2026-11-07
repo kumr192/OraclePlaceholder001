@@ -12,6 +12,7 @@ var server = require("./server.js");
 var access = require("./access.js");
 var holdsApi = require("./api/holds.js");
 var businessUnitsApi = require("./api/business-units.js");
+var holds = require("./holds.js");
 
 var AS_OF = "2026-10-13";
 var failed = 0;
@@ -376,6 +377,9 @@ function mockFusion(password) {
   return function (url, options) {
     var parsed = new URL(url);
     var header = options.headers.Authorization;
+    assert.strictEqual(options.method, "GET");
+    assert.strictEqual(options.body, undefined);
+    assert.strictEqual(String(url).indexOf(password), -1);
     assert.strictEqual(header.indexOf(password), -1);
     assert.strictEqual(header, "Basic " + Buffer.from("fin_impl:" + password).toString("base64"));
     if (parsed.pathname.indexOf("invoiceHolds") !== -1) {
@@ -878,6 +882,64 @@ testAsync("the Vercel holds function uses the same gate and does not leak Oracle
     });
 });
 
+test("the Oracle host must be https and must not carry a password", function () {
+  assert.strictEqual(
+    oracle.siteRoot("https://ibcrqy-test.fa.ocs.oraclecloud.com/"),
+    "https://ibcrqy-test.fa.ocs.oraclecloud.com"
+  );
+  assert.throws(function () {
+    oracle.siteRoot("http://ibcrqy-test.fa.ocs.oraclecloud.com");
+  }, function (err) {
+    return err.kind === "network" && String(err.message).indexOf("https://") !== -1;
+  });
+  assert.throws(function () {
+    oracle.siteRoot("https://user:oracle-secret@ibcrqy-test.fa.ocs.oraclecloud.com/fscmRestApi");
+  }, function (err) {
+    return err.kind === "network" && String(err.message).indexOf("oracle-secret") === -1;
+  });
+});
+
+test("a hold keeps the invoice supplier, amount, and hold reason", function () {
+  var row = oracle.mapHold(
+    {
+      HoldId: 7,
+      InvoiceNumber: "",
+      Supplier: " ",
+      BusinessUnit: "",
+      HoldName: "Price",
+      HoldReason: "Price exceeds PO",
+      HoldDate: "2026-08-01T00:00:00+00:00",
+    },
+    {
+      supplier: "Invoice Supplier",
+      invoiceNumber: "INV-7",
+      businessUnit: "Canada Business Unit",
+      amount: 12.5,
+      currency: "USD",
+    }
+  );
+  assert.strictEqual(row.supplier, "Invoice Supplier");
+  assert.strictEqual(row.invoiceNumber, "INV-7");
+  assert.strictEqual(row.businessUnit, "Canada Business Unit");
+  assert.strictEqual(row.amount, 12.5);
+  assert.strictEqual(row.currency, "USD");
+  assert.strictEqual(row.holdReason, "Price exceeds PO");
+});
+
+test("startup logs do not include Oracle credentials", function () {
+  var text = server.describeStartup({
+    ORACLE_FUSION_URL: "https://ibcrqy-test.fa.ocs.oraclecloud.com",
+    ORACLE_FUSION_USER: "fin_impl",
+    ORACLE_FUSION_PASSWORD: "oracle-secret",
+    APP_ACCESS_PASSWORD: "gate-secret",
+  }).join("\n");
+  assert.ok(text.indexOf("live holds") !== -1);
+  assert.ok(text.indexOf("Access password is set") !== -1);
+  assert.strictEqual(text.indexOf("oracle-secret"), -1);
+  assert.strictEqual(text.indexOf("fin_impl"), -1);
+  assert.strictEqual(text.indexOf("gate-secret"), -1);
+});
+
 test("a business unit is added to the Oracle hold query", function () {
   assert.strictEqual(oracle.holdQueryFor("ReleaseName IS NULL", ""), "ReleaseName IS NULL");
   assert.strictEqual(oracle.holdQueryFor("ReleaseName IS NULL", "all"), "ReleaseName IS NULL");
@@ -1075,6 +1137,129 @@ testAsync("the business unit endpoint uses the same access gate", function () {
         delete process.env.APP_ACCESS_PASSWORD;
       } else {
         process.env.APP_ACCESS_PASSWORD = previous;
+      }
+    });
+});
+
+test("requestUrl copies Vercel query fields that are missing from the url", function () {
+  var url = holds.requestUrl({
+    url: "/api/holds",
+    query: { includeReleased: "true", businessUnit: ["UK Business Unit"] },
+  }, "/api/holds");
+  assert.strictEqual(url.pathname, "/api/holds");
+  assert.strictEqual(url.searchParams.get("includeReleased"), "true");
+  assert.strictEqual(url.searchParams.get("businessUnit"), "UK Business Unit");
+  var existing = holds.requestUrl({
+    url: "/api/holds?businessUnit=Canada%20Business%20Unit",
+    query: { businessUnit: "Other" },
+  }, "/api/holds");
+  assert.strictEqual(existing.searchParams.get("businessUnit"), "Canada Business Unit");
+});
+
+testAsync("Vercel query fields still select the business unit when the url omits them", function () {
+  var res = mockResponse();
+  var req = {
+    method: "GET",
+    url: "/api/holds",
+    query: { businessUnit: "Canada Business Unit", includeReleased: "false" },
+  };
+  return holds.handleHolds(holds.requestUrl(req, "/api/holds"), {}, function () {
+    throw new Error("Oracle must not be called");
+  }, res).then(function () {
+    var body = JSON.parse(res.body);
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(body.mode, "sample");
+    assert.notStrictEqual(body.mode, "live");
+    assert.strictEqual(body.businessUnit, "Canada Business Unit");
+    assert.ok(body.holds.length > 0);
+    assert.ok(body.holds.every(function (hold) {
+      return hold.businessUnit === "Canada Business Unit";
+    }));
+  });
+});
+
+testAsync("an Oracle rejection stays a live error and hides the Oracle body", function () {
+  var res = mockResponse();
+  return holds.handleHolds(
+    new URL("http://127.0.0.1/api/holds"),
+    {
+      ORACLE_FUSION_URL: "https://ibcrqy-test.fa.ocs.oraclecloud.com",
+      ORACLE_FUSION_USER: "fin_impl",
+      ORACLE_FUSION_PASSWORD: "oracle-secret",
+    },
+    function (url, options) {
+      assert.strictEqual(options.method, "GET");
+      assert.strictEqual(String(url).indexOf("oracle-secret"), -1);
+      return jsonResult(401, { detail: "oracle-secret leaked in body" });
+    },
+    res
+  ).then(function () {
+    var body = JSON.parse(res.body);
+    assert.strictEqual(res.statusCode, 502);
+    assert.strictEqual(body.ok, false);
+    assert.strictEqual(body.mode, "live");
+    assert.strictEqual(body.holds, undefined);
+    assert.strictEqual(JSON.stringify(body).indexOf("oracle-secret"), -1);
+    assert.strictEqual(JSON.stringify(body).indexOf("leaked"), -1);
+  });
+});
+
+testAsync("a transport error does not copy the Oracle password or the target url", function () {
+  return oracle.loadHolds({
+    baseUrl: "https://ibcrqy-test.fa.ocs.oraclecloud.com",
+    user: "fin_impl",
+    password: "oracle-secret",
+    includeReleased: false,
+    fetch: function (url, options) {
+      assert.strictEqual(options.method, "GET");
+      assert.strictEqual(options.body, undefined);
+      assert.strictEqual(String(url).indexOf("oracle-secret"), -1);
+      return Promise.reject(new Error("connect failed https://evil.example/oracle-secret"));
+    },
+  }).then(function () {
+    throw new Error("expected transport failure");
+  }).catch(function (err) {
+    if (err && err.message === "expected transport failure") {
+      throw err;
+    }
+    assert.strictEqual(err.kind, "network");
+    assert.ok(err.message.indexOf("Could not reach") !== -1);
+    assert.strictEqual(String(err.message).indexOf("oracle-secret"), -1);
+    assert.strictEqual(String(err.message).indexOf("evil.example"), -1);
+  });
+});
+
+testAsync("pages and the API send no-store security headers", function () {
+  var app = server.createApp({ env: {} });
+  var httpServer;
+  return listen(app)
+    .then(function (started) {
+      httpServer = started;
+      return fetch("http://127.0.0.1:" + httpServer.address().port + "/");
+    })
+    .then(function (response) {
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.headers.get("cache-control"), "no-store");
+      assert.strictEqual(response.headers.get("x-content-type-options"), "nosniff");
+      assert.strictEqual(response.headers.get("x-frame-options"), "DENY");
+      return response.text().then(function (html) {
+        assert.ok(html.indexOf("Invoice hold triage") !== -1);
+        assert.strictEqual(html.indexOf("ORACLE_FUSION_PASSWORD") !== -1, false);
+        return fetch("http://127.0.0.1:" + httpServer.address().port + "/api/holds");
+      });
+    })
+    .then(function (response) {
+      assert.strictEqual(response.headers.get("cache-control"), "no-store");
+      assert.strictEqual(response.headers.get("x-content-type-options"), "nosniff");
+      return response.json();
+    })
+    .then(function (body) {
+      assert.strictEqual(body.mode, "sample");
+      assert.notStrictEqual(body.mode, "live");
+    })
+    .finally(function () {
+      if (httpServer) {
+        httpServer.close();
       }
     });
 });

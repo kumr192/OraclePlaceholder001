@@ -12,6 +12,9 @@ module.exports = function handler(req, res) {
       "WWW-Authenticate": decision.authenticate,
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "X-Frame-Options": "DENY",
     });
     res.end(decision.message);
     return Promise.resolve();

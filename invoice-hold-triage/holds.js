@@ -29,6 +29,33 @@ function sampleHolds() {
   });
 }
 
+function requestUrl(req, fallbackPath) {
+  var raw = req && req.url ? String(req.url) : fallbackPath;
+  var url;
+  try {
+    url = new URL(raw, "http://127.0.0.1");
+  } catch (err) {
+    url = new URL(fallbackPath, "http://127.0.0.1");
+  }
+  var query = req && req.query && typeof req.query === "object" ? req.query : null;
+  if (!query) {
+    return url;
+  }
+  Object.keys(query).forEach(function (key) {
+    if (!key || url.searchParams.has(key)) {
+      return;
+    }
+    var value = query[key];
+    if (Array.isArray(value)) {
+      value = value[0];
+    }
+    if (value != null) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  return url;
+}
+
 function sendJson(res, status, body) {
   var payload = JSON.stringify(body);
   if (typeof res.status === "function" && typeof res.json === "function" && !res.writeHead) {
@@ -38,6 +65,9 @@ function sendJson(res, status, body) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
   });
   res.end(payload);
 }
@@ -67,7 +97,7 @@ function holdsForUnit(rows, businessUnit) {
 
 function sendOracleError(res, err) {
   var body = oracle.publicError(err);
-  var status = body.kind === "login" ? 401 : 502;
+  var status = 502;
   console.error("Oracle request failed:", body.kind, err && err.status ? err.status : "");
   sendJson(res, status, {
     ok: false,
@@ -156,6 +186,7 @@ function handleBusinessUnits(env, fetchImpl, res) {
 module.exports = {
   sampleHolds: sampleHolds,
   sampleBusinessUnits: sampleBusinessUnits,
+  requestUrl: requestUrl,
   handleHolds: handleHolds,
   handleBusinessUnits: handleBusinessUnits,
 };

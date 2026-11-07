@@ -43,8 +43,15 @@ function siteRoot(value) {
   } catch (err) {
     throw new OracleRequestError("network", null, "ORACLE_FUSION_URL is not a valid address.");
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
+  if (url.protocol !== "https:") {
     throw new OracleRequestError("network", null, "ORACLE_FUSION_URL must start with https://.");
+  }
+  if (url.username || url.password) {
+    throw new OracleRequestError(
+      "network",
+      null,
+      "ORACLE_FUSION_URL must not include a user name or password. Set ORACLE_FUSION_USER and ORACLE_FUSION_PASSWORD instead."
+    );
   }
   return url.origin;
 }
@@ -603,29 +610,36 @@ function lookupInvoice(index, raw) {
   return candidates[0];
 }
 
+function textValue(value) {
+  if (value == null) {
+    return "";
+  }
+  return String(value).trim();
+}
+
 function mapHold(raw, invoice) {
   var amount = null;
   var currency = "";
   if (invoice && invoice.amount != null && invoice.amount !== "" && !Number.isNaN(Number(invoice.amount))) {
     amount = Number(invoice.amount);
-    currency = invoice.currency || "";
+    currency = textValue(invoice.currency);
   }
   return {
     holdId: raw && raw.HoldId != null ? raw.HoldId : null,
-    supplier: (raw && raw.Supplier) || "",
-    invoiceNumber: (raw && raw.InvoiceNumber) || "",
+    supplier: textValue(raw && raw.Supplier) || textValue(invoice && invoice.supplier),
+    invoiceNumber: textValue(raw && raw.InvoiceNumber) || textValue(invoice && invoice.invoiceNumber),
     amount: amount,
     currency: currency,
-    holdName: (raw && raw.HoldName) || "",
+    holdName: textValue(raw && raw.HoldName),
     holdDate: dateOnly(raw && raw.HoldDate),
-    businessUnit: (raw && raw.BusinessUnit) || "",
+    businessUnit: textValue(raw && raw.BusinessUnit) || textValue(invoice && invoice.businessUnit),
     released: isReleased(raw),
     releaseDate: dateOnly(raw && raw.ReleaseDate),
-    holdReason: (raw && raw.HoldReason) || "",
-    holdDetails: (raw && raw.HoldDetails) || "",
-    lineHeld: (raw && raw.LineHeld) || "",
-    workflowStatus: (raw && raw.WorkflowStatus) || "",
-    heldBy: (raw && raw.HeldBy) || "",
+    holdReason: textValue(raw && raw.HoldReason),
+    holdDetails: textValue(raw && raw.HoldDetails),
+    lineHeld: textValue(raw && raw.LineHeld),
+    workflowStatus: textValue(raw && raw.WorkflowStatus),
+    heldBy: textValue(raw && raw.HeldBy),
   };
 }
 
