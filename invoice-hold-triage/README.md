@@ -1,23 +1,23 @@
 # Invoice hold triage
 
-This page shows invoice holds from Oracle Fusion Payables.
+This page reads invoice holds from Oracle Fusion Payables. It does not release holds or create payments.
 
 ## Run it on your computer
 
-1. In this folder, copy the example settings file:
+1. Copy the example settings file:
 
 ```bash
 cp .env.example .env
 ```
 
-2. Open `.env` and set:
+2. Set these keys in `.env`:
 
-- `ORACLE_FUSION_URL` — your Fusion web address, such as `https://your-instance.fa.ocs.oraclecloud.com`
-- `ORACLE_FUSION_USER` — your user name
-- `ORACLE_FUSION_PASSWORD` — your Oracle password
-- `APP_ACCESS_PASSWORD` — optional here. If you set it, the page asks for this password. Any username is fine. This is not your Oracle password.
+- `ORACLE_FUSION_URL` — `https://ibcrqy-test.fa.ocs.oraclecloud.com`
+- `ORACLE_FUSION_USER` — the Oracle user name
+- `ORACLE_FUSION_PASSWORD` — the Oracle password
+- `APP_ACCESS_PASSWORD` — required when the Oracle settings are set. Any username is fine. Leave it empty only for the labeled sample demo.
 
-3. Run:
+3. Start the page:
 
 ```bash
 node server.js
@@ -27,37 +27,41 @@ node server.js
 
 You need Node.js 18 or newer. There is nothing to install.
 
-The Oracle password stays in `.env`. The page in the browser never sees it. Do not commit `.env`. Git already ignores that file.
+Keep the Oracle password in `.env`. The browser never receives it. Do not commit `.env`.
 
-The page starts with open holds only. Open holds are holds with no release name. Check **Include released holds** to add released holds as well. Every open hold stays in the list. Only released holds are capped, at the 500 most recent. **Refresh** loads them again.
+The page loads open holds first. An open hold has no release name. A release date without a release name stays on the open list. Check **Include released holds** to add holds whose release name is set. Open holds stop at 1,000. Released holds stop at the 500 most recent. A cap warning says how many holds were fetched and how many are shown. **Refresh** loads the list again.
 
-The **Business unit** list loads after you pass the access password. Choose one business unit to load only that unit from Oracle, which is faster than loading every unit. **All business units** loads holds without that filter. In sample mode the list comes from the sample invoices.
+Choose a **Business unit** to ask Oracle for that unit only. **All business units** does not add that filter. The list comes from Oracle after the access password succeeds. In sample mode the list comes from the sample invoices.
 
-If the Oracle settings are missing, the page shows sample invoices and labels them as sample data. That is not your Oracle data.
+If the Oracle settings are missing, the page shows sample invoices and labels them **Sample data**. That is not live Fusion data.
 
-A bad Oracle password or a network problem is shown on the page. The page does not switch to sample data when Oracle rejects the sign-in.
+If the Oracle settings are set and `APP_ACCESS_PASSWORD` is empty, the page and the API return HTTP 503 `config-required`. They do not call Oracle.
+
+A bad Oracle password or a network problem stays an error. The page does not switch those errors to sample data.
 
 ## Put it on Vercel
 
-The site can run on Vercel Hobby. Use these project settings:
+Use Vercel Hobby with these project settings:
 
 - Root Directory: `invoice-hold-triage`
 - Framework Preset: Other
 - Build Command: leave empty
 - Output Directory: `public`
 
-Then add these environment variables in the Vercel project:
+Set these environment variables on the Vercel project. Do not commit the values.
 
-- `ORACLE_FUSION_URL`
-- `ORACLE_FUSION_USER`
-- `ORACLE_FUSION_PASSWORD`
-- `APP_ACCESS_PASSWORD`
+| Key | Value |
+| --- | --- |
+| `ORACLE_FUSION_URL` | `https://ibcrqy-test.fa.ocs.oraclecloud.com` |
+| `ORACLE_FUSION_USER` | Oracle user name, set by the coordinator |
+| `ORACLE_FUSION_PASSWORD` | Oracle password, set by the coordinator |
+| `APP_ACCESS_PASSWORD` | Site access password, set by the coordinator |
 
-Set `APP_ACCESS_PASSWORD`. The Vercel address is public. Without this, anyone who can open the URL can see live invoice holds. When it is set, the browser asks for a username and password. Type any username and use `APP_ACCESS_PASSWORD`.
+Set `APP_ACCESS_PASSWORD` with the Oracle settings. If the Oracle settings are present and this access password is empty, the deployment returns HTTP 503 `config-required` and does not call Oracle. The browser asks for any username and that access password.
 
-The Oracle password stays on the server. It is not in the web page.
+The Oracle password stays on the server. It is not in the page, the logs, or Git.
 
-Loading holds can take about half a minute. The holds function is allowed to run for 60 seconds so Vercel does not stop it early.
+`GET /api/holds` and `GET /api/business-units` can run for 60 seconds. Hobby allows that. Open holds are usually faster. Include-released takes longer because it also reads recent released holds and invoice amounts.
 
 Deploy, then open the Vercel URL.
 
@@ -69,4 +73,4 @@ From this folder:
 node test.js
 ```
 
-The checks use fake Oracle responses. They do not sign in to Oracle. They check paging, hold mapping, amount matching, the business unit list, summary totals, the access password, and the suggested actions.
+There is no separate build. The checks use fake Oracle responses. They do not sign in to Oracle. They check paging, supplier, amount, hold reason, the business unit list, summary totals, the access password, and https-only Oracle calls.

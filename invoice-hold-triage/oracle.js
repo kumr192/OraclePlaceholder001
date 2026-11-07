@@ -4,7 +4,9 @@
  * https://docs.oracle.com/en/cloud/saas/financials/26b/farfa/op-invoiceholds-get.html
  * https://docs.oracle.com/en/cloud/saas/financials/25d/farfa/op-invoices-get.html
  *
- * Open holds are queried with ReleaseName IS NULL. On some instances
+ * Open holds are queried with ReleaseName IS NULL. A hold is released only
+ * when ReleaseName is set. A release date without a release name stays on
+ * the open list so the row is not dropped. On some instances
  * ReleaseDate IS NULL returns HTTP 200 with zero rows, and ReleaseDate=null
  * returns HTTP 400, so those queries are not used.
  */
@@ -43,8 +45,15 @@ function siteRoot(value) {
   } catch (err) {
     throw new OracleRequestError("network", null, "ORACLE_FUSION_URL is not a valid address.");
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
+  if (url.protocol !== "https:") {
     throw new OracleRequestError("network", null, "ORACLE_FUSION_URL must start with https://.");
+  }
+  if (url.username || url.password) {
+    throw new OracleRequestError(
+      "network",
+      null,
+      "ORACLE_FUSION_URL must not include a user name or password. Set ORACLE_FUSION_USER and ORACLE_FUSION_PASSWORD instead."
+    );
   }
   return url.origin;
 }
@@ -53,9 +62,14 @@ function isReleased(raw) {
   if (raw == null) {
     return false;
   }
-  var name = raw.ReleaseName != null && String(raw.ReleaseName).trim() !== "";
-  var date = raw.ReleaseDate != null && String(raw.ReleaseDate).trim() !== "";
-  return name || date;
+  return raw.ReleaseName != null && String(raw.ReleaseName).trim() !== "";
+}
+
+function hasReleaseDateWithoutName(raw) {
+  if (raw == null || isReleased(raw)) {
+    return false;
+  }
+  return raw.ReleaseDate != null && String(raw.ReleaseDate).trim() !== "";
 }
 
 function dateOnly(value) {
@@ -591,16 +605,23 @@ function lookupInvoice(index, raw) {
       String(candidate.supplier || "").trim().toLowerCase() === supplier
     );
   });
-  if (byBoth.length >= 1) {
+  if (byBoth.length === 1) {
     return byBoth[0];
   }
   var byUnit = candidates.filter(function (candidate) {
     return String(candidate.businessUnit || "").trim().toLowerCase() === businessUnit;
   });
-  if (byUnit.length >= 1) {
+  if (byUnit.length === 1) {
     return byUnit[0];
   }
-  return candidates[0];
+  return null;
+}
+
+function textValue(value) {
+  if (value == null) {
+    return "";
+  }
+  return String(value).trim();
 }
 
 function mapHold(raw, invoice) {
@@ -608,24 +629,24 @@ function mapHold(raw, invoice) {
   var currency = "";
   if (invoice && invoice.amount != null && invoice.amount !== "" && !Number.isNaN(Number(invoice.amount))) {
     amount = Number(invoice.amount);
-    currency = invoice.currency || "";
+    currency = textValue(invoice.currency);
   }
   return {
     holdId: raw && raw.HoldId != null ? raw.HoldId : null,
-    supplier: (raw && raw.Supplier) || "",
-    invoiceNumber: (raw && raw.InvoiceNumber) || "",
+    supplier: textValue(raw && raw.Supplier) || textValue(invoice && invoice.supplier),
+    invoiceNumber: textValue(raw && raw.InvoiceNumber) || textValue(invoice && invoice.invoiceNumber),
     amount: amount,
     currency: currency,
-    holdName: (raw && raw.HoldName) || "",
+    holdName: textValue(raw && raw.HoldName),
     holdDate: dateOnly(raw && raw.HoldDate),
-    businessUnit: (raw && raw.BusinessUnit) || "",
+    businessUnit: textValue(raw && raw.BusinessUnit) || textValue(invoice && invoice.businessUnit),
     released: isReleased(raw),
     releaseDate: dateOnly(raw && raw.ReleaseDate),
-    holdReason: (raw && raw.HoldReason) || "",
-    holdDetails: (raw && raw.HoldDetails) || "",
-    lineHeld: (raw && raw.LineHeld) || "",
-    workflowStatus: (raw && raw.WorkflowStatus) || "",
-    heldBy: (raw && raw.HeldBy) || "",
+    holdReason: textValue(raw && raw.HoldReason),
+    holdDetails: textValue(raw && raw.HoldDetails),
+    lineHeld: textValue(raw && raw.LineHeld),
+    workflowStatus: textValue(raw && raw.WorkflowStatus),
+    heldBy: textValue(raw && raw.HeldBy),
   };
 }
 
@@ -755,16 +776,20 @@ async function fetchInvoicesForHolds(config, origin, rawHolds) {
   return { rows: rows, failures: failures };
 }
 
-function releasedCapWarning(count) {
-  return (
-    "Only released holds are capped. Showing the " +
-    count +
-    " most recent released holds. Older released holds were not loaded."
-  );
+function releasedCapWarning(fetched, shown) {
+  var text = "Released holds are capped. Fetched the " + fetched + " most recent released holds.";
+  if (shown !== fetched) {
+    text += " Showing " + shown + " of them.";
+  }
+  return text + " Older released holds were not loaded.";
 }
 
-function openCapWarning(count) {
-  return "Showing the first " + count + " open holds. More open holds were not loaded.";
+function openCapWarning(fetched, shown) {
+  var text = "Open holds are capped. Fetched the first " + fetched + " open holds.";
+  if (shown !== fetched) {
+    text += " Showing " + shown + " of them.";
+  }
+  return text + " Later open holds were not loaded.";
 }
 
 async function loadHolds(config) {
@@ -774,22 +799,30 @@ async function loadHolds(config) {
   if (config.includeReleased) {
     released = await fetchReleasedHolds(config, origin);
   }
+  var fetchedOpen = (open.items || []).length;
+  var fetchedReleased = (released.items || []).length;
   var openItems = selectOpenHolds(open.items, false).filter(function (item) {
     return sameBusinessUnit(item, config.businessUnit);
   });
-  released.items = (released.items || []).filter(function (item) {
+  var releasedItems = (released.items || []).filter(function (item) {
     return sameBusinessUnit(item, config.businessUnit);
   });
-  if (config.includeReleased && openItems.length === 0 && released.items.length > 0) {
+  if (config.includeReleased && openItems.length === 0 && releasedItems.length > 0) {
     open.warning = null;
   }
-  var selected = config.includeReleased ? dedupeHolds(openItems.concat(released.items)) : openItems;
+  var selected = config.includeReleased ? dedupeHolds(openItems.concat(releasedItems)) : openItems;
   var warning = joinWarning(open.warning, released.warning);
+  if (openItems.some(hasReleaseDateWithoutName)) {
+    warning = joinWarning(
+      warning,
+      "Some open holds have a release date and no release name. They stay in the open list."
+    );
+  }
   if (open.truncated) {
-    warning = joinWarning(warning, openCapWarning(openItems.length));
+    warning = joinWarning(warning, openCapWarning(fetchedOpen, openItems.length));
   }
   if (released.truncated) {
-    warning = joinWarning(warning, releasedCapWarning(released.items.length));
+    warning = joinWarning(warning, releasedCapWarning(fetchedReleased, releasedItems.length));
   }
   if (selected.length === 0 && !warning) {
     var unit = normalizeBusinessUnit(config.businessUnit);

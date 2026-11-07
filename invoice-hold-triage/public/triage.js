@@ -174,14 +174,17 @@
   function filterInvoices(invoices, criteria) {
     var options = criteria || {};
     var holdType = options.holdType || "all";
-    var businessUnit = options.businessUnit || "all";
+    var businessUnit = String(options.businessUnit || "all").trim();
     var query = String(options.query || "").trim().toLowerCase();
 
     return (invoices || []).filter(function (invoice) {
       if (holdType !== "all" && invoice.holdName !== holdType) {
         return false;
       }
-      if (businessUnit !== "all" && invoice.businessUnit !== businessUnit) {
+      if (
+        businessUnit.toLowerCase() !== "all" &&
+        String(invoice.businessUnit || "").trim().toLowerCase() !== businessUnit.toLowerCase()
+      ) {
         return false;
       }
       if (!query) {

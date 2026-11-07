@@ -376,6 +376,16 @@ tbody tr:hover {
   color: #31404d;
 }
 
+.hold-reason {
+  display: block;
+  margin-top: 4px;
+  max-width: 16rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 450;
+  white-space: normal;
+}
+
 .status-open {
   background: #e7f6f3;
   color: #0f6e63;

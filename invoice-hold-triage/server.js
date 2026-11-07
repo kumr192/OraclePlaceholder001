@@ -24,24 +24,51 @@ var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
 };
+var SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Cache-Control": "no-store",
+};
+
+function withSecurity(headers) {
+  var merged = {};
+  Object.keys(SECURITY_HEADERS).forEach(function (key) {
+    merged[key] = SECURITY_HEADERS[key];
+  });
+  Object.keys(headers || {}).forEach(function (key) {
+    merged[key] = headers[key];
+  });
+  return merged;
+}
+
+function describeStartup(env) {
+  var creds = envFile.fusionConfig(env);
+  var lines = [];
+  if (!creds) {
+    lines.push("Oracle settings are missing. The page will show sample data.");
+  } else if (!access.isGateEnabled(env && env.APP_ACCESS_PASSWORD)) {
+    lines.push("Oracle settings are set. Live holds stay blocked until APP_ACCESS_PASSWORD is set.");
+  } else {
+    lines.push("Oracle settings are set. The page will load live holds.");
+  }
+  if (access.isGateEnabled(env && env.APP_ACCESS_PASSWORD)) {
+    lines.push("Access password is set. The browser will ask for it.");
+  }
+  return lines;
+}
 
 function sendFile(res, fileName) {
   var filePath = path.join(PUBLIC, fileName);
   var body = fs.readFileSync(filePath);
-  res.writeHead(200, {
+  res.writeHead(200, withSecurity({
     "Content-Type": TYPES[path.extname(fileName)] || "application/octet-stream",
-    "Cache-Control": "no-store",
-  });
+  }));
   res.end(body);
 }
 
 function deny(res, decision) {
-  res.writeHead(401, {
-    "WWW-Authenticate": decision.authenticate,
-    "Content-Type": "text/plain; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(decision.message);
+  access.writeDenied(res, decision);
 }
 
 function createApp(options) {
@@ -56,32 +83,37 @@ function createApp(options) {
       res.end();
       return;
     }
-    var decision = access.authorize(access.headerFromRequest(req), env.APP_ACCESS_PASSWORD);
+    var decision = access.authorize(access.headerFromRequest(req), env.APP_ACCESS_PASSWORD, env);
     if (!decision.ok) {
       deny(res, decision);
       return;
     }
-    if (url.pathname === "/api/holds" && req.method === "GET") {
-      holds.handleHolds(url, env, fetchImpl, res);
-      return;
-    }
-    if (url.pathname === "/api/business-units" && req.method === "GET") {
-      holds.handleBusinessUnits(env, fetchImpl, res);
+    if (url.pathname === "/api/holds" || url.pathname === "/api/business-units") {
+      if (req.method !== "GET") {
+        res.writeHead(405, withSecurity({ Allow: "GET" }));
+        res.end("Method not allowed");
+        return;
+      }
+      if (url.pathname === "/api/holds") {
+        holds.handleHolds(url, env, fetchImpl, res);
+      } else {
+        holds.handleBusinessUnits(env, fetchImpl, res);
+      }
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
-      res.writeHead(405, { Allow: "GET, HEAD" });
+      res.writeHead(405, withSecurity({ Allow: "GET, HEAD" }));
       res.end("Method not allowed");
       return;
     }
     var fileName = FILES[url.pathname];
     if (!fileName) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.writeHead(404, withSecurity({ "Content-Type": "text/plain; charset=utf-8" }));
       res.end("Not found");
       return;
     }
     if (req.method === "HEAD") {
-      res.writeHead(200, { "Content-Type": TYPES[path.extname(fileName)] });
+      res.writeHead(200, withSecurity({ "Content-Type": TYPES[path.extname(fileName)] }));
       res.end();
       return;
     }
@@ -93,18 +125,12 @@ function start() {
   envFile.loadEnvFile(path.join(ROOT, ".env"), process.env);
   var port = Number(process.env.PORT) || 3000;
   var host = process.env.HOST || "127.0.0.1";
-  var creds = envFile.fusionConfig(process.env);
   var app = createApp({ env: process.env });
   var server = http.createServer(app);
   server.listen(port, host, function () {
-    if (!creds) {
-      console.log("Oracle settings are missing. The page will show sample data.");
-    } else {
-      console.log("Oracle settings found for user " + creds.user + ". The page will load live holds.");
-    }
-    if (access.isGateEnabled(process.env.APP_ACCESS_PASSWORD)) {
-      console.log("Access password is set. The browser will ask for it.");
-    }
+    describeStartup(process.env).forEach(function (line) {
+      console.log(line);
+    });
     console.log("Open http://" + host + ":" + port);
   });
   return server;
@@ -116,5 +142,6 @@ if (require.main === module) {
 
 module.exports = {
   createApp: createApp,
+  describeStartup: describeStartup,
   sampleHolds: holds.sampleHolds,
 };
